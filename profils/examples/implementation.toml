@@ -1,0 +1,32 @@
+# Example profile: an implementation task for a coding agent.
+name = "implementation"
+version = "1.0"
+description = "Implement a scoped change with real evidence, without precautionary over-engineering."
+target = "A coding agent with write access limited to the repository"
+prompt_language = "English for instructions; keep quoted code, paths and identifiers as they are"
+
+[[segments]]
+id = "goal"
+kind = "generated"
+instruction = "The goal, the real stakes and the ambition expected, in a few sentences. Who owns the code and whether minimal or broader changes are wanted, if the mission says so."
+
+[[segments]]
+id = "mission"
+kind = "mission"
+heading = "## Task"
+
+[[segments]]
+id = "criteria"
+kind = "generated"
+instruction = "Acceptance criteria and the oracle (tests or commands) that prove success; permissions (what may be changed, what requires approval); what to do if the task turns out to be impossible as specified."
+
+[[segments]]
+id = "realisation"
+kind = "fixed"
+file = "segments/proportion_realisation.md"
+
+[[segments]]
+id = "report"
+kind = "fixed"
+text = """## Report
+End with: what changed (files), the evidence you actually obtained (commands run and their results), what you could not verify, and any optional improvement you chose not to make."""

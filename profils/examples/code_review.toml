@@ -1,0 +1,42 @@
+# Example profile: a code review mission for an agent (Claude Code, Codex...).
+# Fixed segments are inserted verbatim; generated segments are written by the designer;
+# the mission object is pasted by the user and inserted verbatim.
+name = "code-review"
+version = "1.0"
+description = "Read-only review of a change or a module, with evidence-based findings."
+target = "A coding agent with read access to the repository"
+prompt_language = "English for instructions; keep quoted code, paths and identifiers as they are"
+notes = "Findings must be reproducible or cited. The agent must not modify files."
+
+[variables]
+report_language = "English"
+
+[[segments]]
+id = "role"
+kind = "generated"
+instruction = "One short paragraph: functional role, the real purpose of this review and why it matters, the ambition expected. No pressure, no invented stakes."
+
+[[segments]]
+id = "mission"
+kind = "mission"
+heading = "## What to review"
+
+[[segments]]
+id = "scope"
+kind = "generated"
+instruction = "Scope and boundaries derived from the mission object: what is in, what is out, the sources to read in full, what success looks like. State assumptions explicitly."
+
+[[segments]]
+id = "method"
+kind = "fixed"
+file = "segments/review_method.md"
+
+[[segments]]
+id = "stop"
+kind = "fixed"
+file = "segments/proportion_audit.md"
+
+[[segments]]
+id = "output"
+kind = "fixed"
+file = "segments/review_output.md"
