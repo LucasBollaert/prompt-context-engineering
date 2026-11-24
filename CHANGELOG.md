@@ -1,5 +1,9 @@
 # Historique public
 
+## 1.6.1 — documentation
+- README : démarrage rapide, résumé en anglais, rôles, plan du dépôt, licences visibles en tête.
+- Intégration continue : vérification des empreintes et tests du référentiel à chaque envoi.
+- Aucune modification des prompts, du protocole, de l'invariant ni du référentiel.
 ## 1.6 — candidat
 - Seul un constat effectivement bloquant impose un cycle ; distinction gravité, preuve, classement et qualification indispensable.
 - Déclassement traçable, sans arbitrage humain systématique ; règles métier prioritaires.
