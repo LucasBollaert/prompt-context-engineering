@@ -1,0 +1,79 @@
+# Cas de référence écrits à la main (ne pas générer depuis le code).
+# Chaque cas : axes A..F (0-2), options, attendus. Couvre les 9 combinaisons A x D,
+# les modules de risque indépendants du niveau et les exclusions de la voie rapide.
+cases:
+  # --- 9 combinaisons complexité x horizon (autres axes neutres : C=1 pour éviter l'oracle)
+  - {name: "A0 D0", axes: [0,0,1,0,0,0], level: T0}
+  - {name: "A0 D1", axes: [0,0,1,1,0,0], level: T1}
+  - {name: "A0 D2", axes: [0,0,1,2,0,0], level: T3}
+  - {name: "A1 D0", axes: [1,0,1,0,0,0], level: T1}
+  - {name: "A1 D1", axes: [1,0,1,1,0,0], level: T2}
+  - {name: "A1 D2", axes: [1,0,1,2,0,0], level: T3}
+  - {name: "A2 D0", axes: [2,0,1,0,0,0], level: T2}
+  - {name: "A2 D1", axes: [2,0,1,1,0,0], level: T2}
+  - {name: "A2 D2", axes: [2,0,1,2,0,0], level: T3}
+  # --- modules indépendants du niveau
+  - {name: "envoi engageant à un tiers, tâche simple", axes: [0,2,1,0,0,2], level: T0,
+     modules_include: [risk_strict, write_tools], fast_path: false}
+  - {name: "migration longue sûre", axes: [2,1,0,2,0,2], level: T3,
+     modules_include: [risk_scope, oracle, write_tools], fast_path: false}
+  - {name: "correctif libellé, terminal", axes: [0,0,0,0,0,2], level: T0,
+     modules_include: [oracle, write_tools], fast_path: false}
+  - {name: "présentation sans public", axes: [0,0,2,0,2,0], level: T0,
+     modules_include: [clarify_or_announce, criteria_human], fast_path: false}
+  # --- voie rapide : autorisée
+  - {name: "traduction courte", axes: [0,0,1,0,0,0], level: T0, fast_path: true}
+  - {name: "question complexe déjà bien posée, sans risque", axes: [2,0,2,0,0,0], level: T2,
+     well_formed: true, fast_path: true}
+  - {name: "recherche bien posée avec outils de lecture", axes: [1,0,1,0,1,1], level: T1,
+     well_formed: true, fast_path: true}
+  # --- voie rapide : interdite même si la demande est parfaitement formulée (V11-003)
+  - {name: "suppression définitive de fichiers", axes: [0,2,1,0,0,2], level: T0,
+     well_formed: true, fast_path: false, modules_include: [risk_strict]}
+  - {name: "modification d'une base de production", axes: [1,2,1,0,0,2], level: T1,
+     well_formed: true, fast_path: false, modules_include: [risk_strict]}
+  - {name: "envoi de données sensibles à un service externe", axes: [0,2,1,0,0,2], level: T0,
+     well_formed: true, fast_path: false, modules_include: [risk_strict]}
+  - {name: "action financière", axes: [0,2,1,0,0,2], level: T0,
+     well_formed: true, fast_path: false, modules_include: [risk_strict]}
+  - {name: "demande claire, permissions non établies", axes: [0,0,1,0,0,1], level: T0,
+     well_formed: true, permissions: missing, fast_path: false,
+     modules_include: [permissions]}
+  # --- permission inconnue (V12-004) : bloquante seulement si la tâche agit
+  - {name: "permission inconnue, tâche à effet", axes: [0,1,1,0,0,1], level: T0,
+     well_formed: true, permissions: unknown, delivery: prompt, modules_include: [permissions]}
+  - {name: "permission inconnue, simple question", axes: [0,0,1,0,0,0], level: T0,
+     permissions: unknown, delivery: fast_path, modules_exclude: [permissions]}
+  # --- modules non bloquants (V12-003) : rien à ajouter -> voie rapide ; lignes utiles manquantes -> prompt minimal
+  - {name: "calcul vérifiable, oracle déjà demandé", axes: [0,0,0,0,0,0], level: T0,
+     delivery: fast_path, modules_include: [oracle]}
+  - {name: "calcul vérifiable, vérification non demandée", axes: [0,0,0,0,0,0], level: T0,
+     missing_useful_lines: true, delivery: minimal_prompt}
+  - {name: "demande nécessitant une hypothèse non écrite", axes: [0,0,1,0,1,0], level: T0,
+     missing_useful_lines: true, delivery: minimal_prompt, modules_include: [assumptions]}
+  - {name: "recherche courte sans critère d'arrêt", axes: [0,0,1,0,0,1], level: T0,
+     missing_useful_lines: true, delivery: minimal_prompt, modules_include: [read_tools]}
+  # --- enjeu informationnel sans outil (V12-008) : module de prudence, non bloquant, sans approbation technique
+  - {name: "question médicale de dosage", axes: [0,0,2,0,0,0], level: T0, info_stakes: 1,
+     missing_useful_lines: true, delivery: minimal_prompt, modules_include: [epistemic],
+     modules_exclude: [risk_strict]}
+  - {name: "conseil juridique sur un contrat", axes: [1,0,2,0,0,0], level: T1, info_stakes: 1,
+     well_formed: true, missing_useful_lines: true, delivery: minimal_prompt, modules_include: [epistemic]}
+  - {name: "aide à une décision d'embauche", axes: [1,0,2,0,1,0], level: T1, info_stakes: 1,
+     well_formed: true, missing_useful_lines: true, delivery: minimal_prompt, modules_include: [epistemic]}
+  - {name: "résumé d'un article, sans enjeu", axes: [0,0,1,0,0,0], level: T0,
+     delivery: fast_path, modules_exclude: [epistemic]}
+# Entrées hors domaine : doivent lever ValueError (V12-004)
+invalid_inputs:
+  - {name: "axes hors bornes", axes: [99,99,99,99,99,99]}
+  - {name: "axe négatif", axes: [0,-1,0,0,0,0]}
+  - {name: "axe non entier", axes: [0,0,1.5,0,0,0]}
+  - {name: "axe booléen", axes: [true,0,0,0,0,0]}
+  - {name: "permission hors domaine", axes: [0,0,0,0,0,0], permissions: maybe}
+  # v1.4 : types stricts des options
+  - {name: "permission sous forme de liste", axes: [0,0,1,0,0,2], permissions: [missing]}
+  - {name: "permission sous forme d'objet", axes: [0,0,1,0,0,2], permissions: {}}
+  - {name: "well_formed chaîne 'false'", axes: [2,0,1,0,0,0], well_formed: "false"}
+  - {name: "missing_useful_lines chaîne", axes: [0,0,1,0,0,0], missing_useful_lines: "false"}
+  - {name: "missing_useful_lines None", axes: [0,0,1,0,0,0], missing_useful_lines: null}
+  - {name: "info_stakes booléen", axes: [0,0,1,0,0,0], info_stakes: true}

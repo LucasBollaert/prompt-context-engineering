@@ -1,0 +1,11 @@
+Prompt & Context Engineering
+Copyright 2026 Lucas Bollaert
+
+Code (referentiel/scripts/, scripts_manifest.py) : Apache License 2.0 (LICENSE).
+Prompts, protocoles, référentiel et documentation : CC BY 4.0 (LICENSE-docs).
+
+Ce projet cite et résume des publications scientifiques et des documentations publiques de fournisseurs de modèles, référencées dans referentiel/13_SOURCES_AND_EVIDENCE.md. Certains exemples et blocs réutilisables (notamment dans referentiel/11_PROMPT_TEMPLATES.md) adaptent des recommandations publiques de ces fournisseurs. Ces sources restent la propriété de leurs auteurs et ne sont pas placées sous les licences du projet.
+
+Claude, Claude Code, GPT, Codex et les autres noms de produits cités sont des marques de leurs détenteurs respectifs. Leur mention sert à désigner les produits et n'implique aucune affiliation ni approbation.
+
+Une partie du contenu a été rédigée avec l'assistance de modèles de langage, puis arbitrée par l'auteur.

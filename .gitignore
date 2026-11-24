@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+*.key
+*.token
+*.zip
+local/
+private/
+archives/
+sources/
+profils/local/

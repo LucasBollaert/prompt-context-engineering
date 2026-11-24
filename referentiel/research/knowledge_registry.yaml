@@ -1,0 +1,917 @@
+# Registre des connaissances — v1.6 (R04 §2 ; structure initiale : R03 §6)
+# Niveaux : OP opérationnel | CO conditionnel | CA candidat | DC déconseillé sous conditions | QO question ouverte
+# Quatre axes de preuve séparés : phénomène, mécanisme, intervention (la technique recommandée ou déconseillée), transfert
+# de la preuve d'intervention aux modèles cibles actuels. Une entrée OP déclare sa base : measured, documented ou reasoned.
+# Les vocabulaires de meta sont des copies documentaires : la référence est le validateur (scripts/registry.py).
+meta:
+  version: '1.6'
+  date: '2026-11-24'
+  tiers:
+  - OP
+  - CO
+  - CA
+  - DC
+  - QO
+  basis:
+  - measured
+  - documented
+  - reasoned
+  phenomenon:
+  - shown
+  - mixed
+  - not_shown
+  - untested
+  - not_applicable
+  mechanism:
+  - shown
+  - proposed
+  - contested
+  - untested
+  - not_applicable
+  intervention:
+  - benefit_shown
+  - null_average
+  - no_benefit_shown
+  - harm_shown
+  - harm_plausible
+  - mixed
+  - documented
+  - untested
+  transfer:
+  - current_models
+  - transfer_unknown
+  - transfer_failed
+  - not_applicable
+  triggers:
+  - all
+  - reasoning_model
+  - non_reasoning_model
+  - light_local_model
+  - long_context
+  - multimodal
+  - creative_diversity
+  - multi_turn
+  - agentic_code
+  - repeated_pipeline
+  - many_constraints
+  - time_sensitive
+  - judgment_eval
+  - factual_longform
+  - motivation_framing
+  - evaluation_design
+  - cost_compression
+  - personalization
+  - structured_output
+entries:
+- id: K01
+  family: A Allocation du raisonnement
+  technique: Régler l'effort par paramètre, pas de CoT manuel (modèles à raisonnement)
+  tier: OP
+  rule: R-AUTO-002
+  basis: documented
+  evidence:
+    phenomenon: shown
+    mechanism: not_applicable
+    intervention:
+    - documented
+    transfer: current_models
+  population: QCM difficiles (GPQA Diamond), CoT explicite
+  models: modèles de raisonnement 2025
+  sources: Meincke et al., Prompting Science Report 2
+  triggers:
+  - reasoning_model
+  next: revalider à chaque génération de modèles
+- id: K02
+  family: A Allocation du raisonnement
+  technique: CoT explicite pour modèles sans raisonnement natif
+  tier: CO
+  evidence:
+    phenomenon: not_applicable
+    mechanism: untested
+    intervention:
+    - benefit_shown
+    - mixed
+    transfer: current_models
+  population: QCM ; petit gain moyen, variabilité accrue par question
+  models: non-raisonneurs 2025
+  sources: Meincke et al. 2025
+  triggers:
+  - non_reasoning_model
+  - light_local_model
+  next: aucun ; conditionnel au type de cible
+- id: K03
+  family: A Allocation du raisonnement
+  technique: Indication textuelle de difficulté pour le thinking adaptatif
+  tier: QO
+  evidence:
+    phenomenon: shown
+    mechanism: proposed
+    intervention:
+    - untested
+    transfer: not_applicable
+  population: non testé sur les cibles ; étiquettes apprises seulement (AdaCtrl)
+  models: modèles ouverts entraînés
+  sources: AdaCtrl TMLR 2026 ; When More Thinking Hurts, Findings ACL 2026
+  triggers:
+  - reasoning_model
+  - cost_compression
+  next: question ouverte
+- id: K04
+  family: B Structuration
+  technique: Self-Discover (structure composée par le modèle)
+  tier: CA
+  evidence:
+    phenomenon: not_applicable
+    mechanism: proposed
+    intervention:
+    - benefit_shown
+    transfer: transfer_unknown
+  population: BBH, raisonnement
+  models: PaLM 2, GPT-4
+  sources: Zhou et al., NeurIPS 2024
+  triggers:
+  - non_reasoning_model
+  - light_local_model
+  next: tester sur modèles légers ou locaux sans raisonnement
+- id: K05
+  family: C Abstraction
+  technique: Step-Back prompting
+  tier: CA
+  evidence:
+    phenomenon: not_applicable
+    mechanism: proposed
+    intervention:
+    - benefit_shown
+    transfer: transfer_unknown
+  population: MMLU physique et chimie, TimeQA
+  models: PaLM-2L (2023)
+  sources: Zheng et al., ICLR 2024
+  triggers:
+  - non_reasoning_model
+  - light_local_model
+  next: tester sur modèles légers
+- id: K06
+  family: C Abstraction
+  technique: Analogical prompting (exemples auto-générés)
+  tier: CA
+  evidence:
+    phenomenon: not_applicable
+    mechanism: contested
+    intervention:
+    - benefit_shown
+    transfer: transfer_unknown
+  population: maths, code ; mécanisme (pertinence) contesté
+  models: GPT-3.5, GPT-4, PaLM 2
+  sources: Yasunaga et al., ICLR 2024 ; Qin et al. 2024
+  triggers:
+  - non_reasoning_model
+  - light_local_model
+  next: tester sur modèles légers
+- id: K07
+  family: D Encodage causal
+  technique: Consigne de relecture (Re-Reading, D1)
+  tier: DC
+  conditions: modèles de 2024 et plus récents, tâches de raisonnement
+  evidence:
+    phenomenon: not_applicable
+    mechanism: proposed
+    intervention:
+    - no_benefit_shown
+    transfer: transfer_failed
+  population: benchmarks de raisonnement
+  models: 6 modèles 2024 (dont GPT-4o, Claude 3 Opus, Gemini 1.5, Llama 3)
+  sources: Xu et al., EMNLP 2024 ; Vaugrante et al. 2024
+  triggers:
+  - reasoning_model
+  - non_reasoning_model
+  next: aucun
+- id: K08
+  family: D Encodage causal
+  technique: Répétition littérale de la requête (D2)
+  tier: CO
+  conditions: modèles sans raisonnement ; options ou contexte avant la question
+  evidence:
+    phenomenon: shown
+    mechanism: proposed
+    intervention:
+    - benefit_shown
+    transfer: transfer_unknown
+  population: ARC, OpenBookQA, GSM8K, MMLU-Pro, MATH + 2 benchmarks des auteurs ; neutre avec raisonnement
+  models: Gemini 2.0 Flash, GPT-4o, Claude 3 Haiku et 3.7 Sonnet, DeepSeek V3 (2025)
+  sources: S-R36
+  triggers:
+  - non_reasoning_model
+  - light_local_model
+  next: piste X8
+- id: K09
+  family: D Encodage causal
+  technique: Documents en haut, question à la fin (D3, texte)
+  tier: OP
+  rule: R-STR-002
+  basis: documented
+  evidence:
+    phenomenon: shown
+    mechanism: proposed
+    intervention:
+    - documented
+    transfer: current_models
+  population: contextes longs
+  models: Claude (recommandation fournisseur)
+  sources: S-A1 ; Lost in the Middle
+  triggers:
+  - long_context
+  next: revalider par cible
+- id: K10
+  family: D Encodage causal
+  technique: Écho de la question avant et après une image (D3, multimodal)
+  tier: CO
+  conditions: VLM ouverts ; transfert aux cibles fermées non vérifié
+  evidence:
+    phenomenon: shown
+    mechanism: shown
+    intervention:
+    - benefit_shown
+    transfer: transfer_unknown
+  population: VQA (NaturalBench, Winoground)
+  models: 5 VLM ouverts
+  sources: arXiv:2607.15565
+  triggers:
+  - multimodal
+  next: piste X11
+- id: K11
+  family: Multimodal
+  technique: Ordre image et texte dans le prompt
+  tier: CO
+  evidence:
+    phenomenon: shown
+    mechanism: proposed
+    intervention:
+    - mixed
+    transfer: transfer_unknown
+  population: raisonnement multimodal
+  models: GPT-4o, Gemini 1.5 Flash, MLLM ouverts
+  sources: Wardle & Sušnjak, BDCC 2025 ; Order Matters
+  triggers:
+  - multimodal
+  next: vérifier la documentation de chaque fournisseur
+- id: K12
+  family: E Hygiène du contexte
+  technique: System 2 Attention (réécrire le contexte sans opinions ni distracteurs)
+  tier: CA
+  evidence:
+    phenomenon: shown
+    mechanism: proposed
+    intervention:
+    - benefit_shown
+    transfer: transfer_unknown
+  population: QA avec opinions, maths avec phrases non pertinentes
+  models: Llama 2 70B (2023)
+  sources: Weston & Sukhbaatar 2023
+  triggers:
+  - judgment_eval
+  - long_context
+  next: piste X3 (R02)
+- id: K13
+  family: E Hygiène du contexte
+  technique: Présupposés neutres (évaluer X plutôt qu'expliquer pourquoi X)
+  tier: CA
+  evidence:
+    phenomenon: shown
+    mechanism: proposed
+    intervention:
+    - untested
+    transfer: not_applicable
+  population: hypothèse dérivée de S2A et des études de complaisance
+  models: —
+  sources: R02 §5
+  triggers:
+  - judgment_eval
+  next: piste X3 (R02)
+- id: K14
+  family: E Hygiène du contexte
+  technique: Prompts parasites (contenu non pertinent qui oriente le modèle)
+  tier: QO
+  evidence:
+    phenomenon: shown
+    mechanism: untested
+    intervention:
+    - untested
+    transfer: not_applicable
+  population: recherche active de prompts non pertinents à fort effet
+  models: modèles étudiés dans arXiv:2605.29678
+  sources: arXiv:2605.29678
+  triggers:
+  - judgment_eval
+  next: rapprocher de 07 (contenu non fiable)
+- id: K15
+  family: F Délégation du calcul
+  technique: Calcul exact par code ou outil (PAL)
+  tier: OP
+  rule: R-GEN-001
+  basis: reasoned
+  evidence:
+    phenomenon: not_applicable
+    mechanism: proposed
+    intervention:
+    - benefit_shown
+    transfer: transfer_unknown
+  population: arithmétique, symbolique ; argument de mécanisme pour les modèles actuels
+  models: Codex et modèles 2022-2023
+  sources: Gao et al. 2022
+  triggers:
+  - all
+  next: aucun
+- id: K16
+  family: G Vérification
+  technique: Oracle exécutable et preuves exigées
+  tier: OP
+  rule: R-VAL-001
+  basis: documented
+  evidence:
+    phenomenon: shown
+    mechanism: not_applicable
+    intervention:
+    - documented
+    transfer: current_models
+  population: agents de code
+  models: Claude Code, Codex
+  sources: S-A3
+  triggers:
+  - agentic_code
+  next: aucun
+- id: K17
+  family: G Vérification
+  technique: Chain-of-Verification factorisée
+  tier: CA
+  evidence:
+    phenomenon: shown
+    mechanism: proposed
+    intervention:
+    - benefit_shown
+    transfer: transfer_unknown
+  population: listes et QA factuelles longues
+  models: Llama 65B (2023)
+  sources: Dhuliawala et al., Findings ACL 2024
+  triggers:
+  - factual_longform
+  next: tester sur réponses factuelles longues sans outil
+- id: K18
+  family: G Vérification
+  technique: Relecteur à contexte frais
+  tier: OP
+  rule: R-VAL-003
+  basis: documented
+  evidence:
+    phenomenon: not_applicable
+    mechanism: proposed
+    intervention:
+    - documented
+    transfer: current_models
+  population: travail long
+  models: Claude Code
+  sources: S-A3
+  triggers:
+  - agentic_code
+  next: aucun
+- id: K19
+  family: P Multi-agents
+  technique: Relecteur d'un autre modèle que le producteur
+  tier: CA
+  evidence:
+    phenomenon: untested
+    mechanism: proposed
+    intervention:
+    - untested
+    transfer: not_applicable
+  population: hypothèse dérivée de l'effet de l'hétérogénéité dans le débat
+  models: —
+  sources: Zhang et al. 2025
+  triggers:
+  - agentic_code
+  - evaluation_design
+  next: piste X7 (R02)
+- id: K20
+  family: P Multi-agents
+  technique: Débat multi-agents d'un même modèle à la place de CoT ou de la self-consistency
+  tier: DC
+  conditions: même modèle, objectif d'exactitude, calcul non contraint
+  evidence:
+    phenomenon: not_applicable
+    mechanism: not_applicable
+    intervention:
+    - no_benefit_shown
+    transfer: transfer_unknown
+  population: 9 benchmarks, 5 méthodes de débat
+  models: 4 modèles (2024-2025)
+  sources: Zhang et al., arXiv:2502.08788
+  triggers:
+  - reasoning_model
+  - non_reasoning_model
+  next: aucun
+- id: K21
+  family: J Diversité
+  technique: Verbalized Sampling (distribution de réponses avec probabilités)
+  tier: CA
+  evidence:
+    phenomenon: shown
+    mechanism: proposed
+    intervention:
+    - benefit_shown
+    transfer: transfer_unknown
+  population: écriture créative, simulation de dialogue, questions ouvertes, données synthétiques
+  models: modèles de pointe 2025
+  sources: Zhang et al., ICML 2026
+  triggers:
+  - creative_diversity
+  next: piste X1 (R02)
+- id: K22
+  family: J Diversité
+  technique: Prompting multilingue pour la diversité
+  tier: CA
+  evidence:
+    phenomenon: shown
+    mechanism: proposed
+    intervention:
+    - benefit_shown
+    transfer: transfer_unknown
+  population: génération ouverte
+  models: GPT-4o, Llama
+  sources: Wang et al., EMNLP 2025
+  triggers:
+  - creative_diversity
+  next: piste X1 (R02)
+- id: K23
+  family: J Diversité
+  technique: Personas comme indices d'échantillonnage
+  tier: CA
+  evidence:
+    phenomenon: shown
+    mechanism: untested
+    intervention:
+    - untested
+    transfer: not_applicable
+  population: idéation (verdict de R-STR-008 limité à l'exactitude)
+  models: —
+  sources: R02 J
+  triggers:
+  - creative_diversity
+  next: piste X1 (R02)
+- id: K24
+  family: L Multi-tours
+  technique: Consolider la spécification au lieu d'ajouter des corrections
+  tier: CA
+  evidence:
+    phenomenon: shown
+    mechanism: proposed
+    intervention:
+    - untested
+    transfer: not_applicable
+  population: problème démontré (baisse de 39 % en conversation fragmentée) ; remède non testé ici
+  models: 15 modèles 2025
+  sources: Laban et al., ICLR 2026
+  triggers:
+  - multi_turn
+  next: piste X2 (R02)
+- id: K25
+  family: L Multi-tours
+  technique: Outil ou permission explicite de clarification
+  tier: CA
+  evidence:
+    phenomenon: shown
+    mechanism: proposed
+    intervention:
+    - benefit_shown
+    transfer: transfer_unknown
+  population: agents de code sous-spécifiés (questions ciblées)
+  models: modèles 2025
+  sources: Vijayvargiya et al., Ambig-SWE
+  triggers:
+  - agentic_code
+  - multi_turn
+  next: piste X4 (R02)
+- id: K26
+  family: I Épistémique sociale
+  technique: Réduire la complaisance par consigne textuelle
+  tier: QO
+  evidence:
+    phenomenon: shown
+    mechanism: proposed
+    intervention:
+    - no_benefit_shown
+    transfer: current_models
+  population: complaisance sociale ; mitigations par prompt d'efficacité limitée
+  models: 11 modèles 2025
+  sources: Cheng et al., ELEPHANT, ICLR 2026
+  triggers:
+  - judgment_eval
+  next: piste X3 (R02) avec métrique de sélectivité
+- id: K27
+  family: M Apprentissage en contexte
+  technique: Many-shot (des dizaines à des centaines d'exemples mis en cache)
+  tier: CO
+  conditions: classification ou extraction répétée avec exemples annotés
+  evidence:
+    phenomenon: not_applicable
+    mechanism: proposed
+    intervention:
+    - benefit_shown
+    transfer: transfer_unknown
+  population: classification, traduction, résumé, raisonnement
+  models: Gemini 1.5 Pro (2024)
+  sources: S-R35 ; note de R-EX-001
+  triggers:
+  - repeated_pipeline
+  next: piste X5 (R02)
+- id: K28
+  family: N Motivation
+  technique: Menaces, pourboires, pression émotionnelle, faux enjeux
+  tier: DC
+  rule: R-TONE-003
+  conditions: toujours, sauf contrôle négatif en bac à sable
+  evidence:
+    phenomenon: not_applicable
+    mechanism: proposed
+    intervention:
+    - null_average
+    - harm_plausible
+    transfer: current_models
+  population: exactitude des tâches fermées (null) ; agentique (risque indirect)
+  models: modèles 2025-2026
+  sources: S-R28, S-R29, S-R30, S-A17, S-A18
+  triggers:
+  - motivation_framing
+  - agentic_code
+  next: bras P du pilote P0 (bac à sable)
+- id: K29
+  family: N Motivation
+  technique: Encouragement, politesse, invitation à la fierté
+  population: 'exactitude des tâches fermées : effet moyen nul ; tâches ouvertes : un indice positif isolé (fierté,
+    GPT-4o, étude humaine) et des effets hétérogènes'
+  tier: CA
+  evidence:
+    phenomenon: not_applicable
+    mechanism: untested
+    intervention:
+    - null_average
+    - mixed
+    transfer: transfer_unknown
+  models: modèles 2025-2026 ; GPT-4o pour l'étude humaine
+  sources: S-R30 ; arXiv:2601.05104 ; arXiv:2604.02236
+  triggers:
+  - motivation_framing
+  - creative_diversity
+  next: volet ouvert du pilote P0
+- id: K30
+  family: N Motivation
+  technique: Vrais enjeux donnés comme information
+  tier: OP
+  rule: R-CLAR-002
+  basis: documented
+  evidence:
+    phenomenon: not_applicable
+    mechanism: untested
+    intervention:
+    - documented
+    transfer: current_models
+  population: inférence des critères implicites ; mécanisme non établi
+  models: Claude (recommandation fournisseur)
+  sources: S-A1
+  triggers:
+  - all
+  next: test du mécanisme (R03 §4.3)
+- id: K31
+  family: N Motivation
+  technique: Droit à l'échec honnête et canal d'abandon
+  tier: OP
+  rule: R-AUTO-011
+  basis: measured
+  evidence:
+    phenomenon: shown
+    mechanism: proposed
+    intervention:
+    - benefit_shown
+    transfer: current_models
+  population: tâches impossibles (spécification et tests en conflit) ; effet très variable selon le modèle
+  models: GPT-5, o3, Claude Opus 4.1
+  sources: S-R31
+  triggers:
+  - agentic_code
+  next: plan 2×2 texte × harnais (R03 §4.1)
+- id: K32
+  family: Saturation
+  technique: Ne pas multiplier les exigences dures ; distinguer redondantes, indépendantes, interdépendantes et
+    facilitatrices
+  population: 'phénomène : réussite conjointe de 1 à 12 contraintes vérifiées sans juge, jusqu''à 500 consignes
+    ; mitigation (moins d''ajouts, contrôle, découpage) non testée'
+  next: piste X10 (mitigation)
+  tier: OP
+  rule: R-STR-009
+  basis: reasoned
+  evidence:
+    phenomenon: shown
+    mechanism: shown
+    intervention:
+    - untested
+    transfer: not_applicable
+  models: 15 et 20 modèles 2025-2026
+  sources: S-R33, S-R34
+  triggers:
+  - many_constraints
+- id: K33
+  family: Interactions
+  technique: Contraintes de format strictes sur une tâche de raisonnement
+  tier: DC
+  conditions: schéma qui force la réponse avant le raisonnement, sans thinking natif
+  evidence:
+    phenomenon: not_applicable
+    mechanism: proposed
+    intervention:
+    - harm_shown
+    transfer: transfer_unknown
+  population: GSM8K, concaténation de dernières lettres, objets mélangés ; classification améliorée
+  models: GPT-3.5, Claude 3 Haiku, Gemini, Llama 3 (2024)
+  sources: Tam et al., EMNLP 2024
+  triggers:
+  - structured_output
+  - non_reasoning_model
+  next: aucun ; déjà dans 03
+- id: K34
+  family: Interactions
+  technique: Combiner plusieurs techniques en supposant des gains additifs
+  tier: DC
+  conditions: toute combinaison non testée en bloc
+  evidence:
+    phenomenon: not_applicable
+    mechanism: not_applicable
+    intervention:
+    - no_benefit_shown
+    transfer: transfer_unknown
+  population: génération de code (plan factoriel), classification de construits
+  models: GPT-4o, Llama 3, Mistral
+  sources: arXiv:2412.20545 ; arXiv:2512.03818
+  triggers:
+  - all
+  next: tester la combinaison contre la baseline (12 §5.1)
+- id: K35
+  family: Robustesse
+  technique: Régression et paraphrases à chaque changement de modèle ou de prompt
+  population: 'phénomène : sensibilité au format et dérive entre modèles ; tester des paraphrases est une pratique
+    de mesure raisonnée, pas une mitigation évaluée'
+  tier: OP
+  rule: R-EVAL-001
+  basis: reasoned
+  evidence:
+    phenomenon: shown
+    mechanism: untested
+    intervention:
+    - untested
+    transfer: not_applicable
+  models: modèles ouverts et fermés 2023-2026
+  sources: Sclar et al., ICLR 2024 ; PromptBridge ; arXiv:2610.00416
+  triggers:
+  - evaluation_design
+  next: aucun
+- id: K36
+  family: Compression
+  technique: Compression par tokens (LLMLingua) sur des tâches de raisonnement
+  tier: DC
+  conditions: raisonnement mathématique ou CoT, sans test préalable
+  evidence:
+    phenomenon: not_applicable
+    mechanism: proposed
+    intervention:
+    - mixed
+    transfer: transfer_unknown
+  population: gains dans une fenêtre de fonctionnement ; raisonnement plus fragile que le résumé
+  models: modèles ouverts
+  sources: arXiv:2604.02985 ; arXiv:2605.17932 ; arXiv:2505.00019
+  triggers:
+  - cost_compression
+  next: aucun
+- id: K37
+  family: Compression
+  technique: Compaction sémantique en précisant quoi préserver
+  tier: OP
+  rule: R-CTX-006
+  basis: documented
+  evidence:
+    phenomenon: shown
+    mechanism: not_applicable
+    intervention:
+    - documented
+    transfer: current_models
+  population: agents longs
+  models: Claude Code, Codex
+  sources: S-A3
+  triggers:
+  - agentic_code
+  - long_context
+  next: aucun
+- id: K38
+  family: Temporel
+  technique: Faire signaler les faits datés à vérifier (la date elle-même relève de R-CAP-001)
+  population: 'phénomène : réponses périmées en question ouverte malgré la bonne option en QCM (32 à 45 %) ; consigne
+    de signalement non testée'
+  next: à tester sur une tâche de recherche datée
+  tier: CA
+  evidence:
+    phenomenon: shown
+    mechanism: proposed
+    intervention:
+    - untested
+    transfer: not_applicable
+  models: modèles 2024-2025
+  sources: arXiv:2510.19172 ; LLMLagBench
+  triggers:
+  - time_sensitive
+- id: K39
+  family: Temporel
+  technique: Coupure de connaissances simulée par prompt (backtesting sans fuite)
+  tier: DC
+  conditions: évaluation ou backtesting qui exige l'absence de fuite
+  evidence:
+    phenomenon: shown
+    mechanism: proposed
+    intervention:
+    - harm_shown
+    transfer: transfer_unknown
+  population: prédiction et QA sous coupure
+  models: modèles 2024-2026
+  sources: ExAnte ; arXiv:2606.05804
+  triggers:
+  - time_sensitive
+  - evaluation_design
+  next: aucun
+- id: K40
+  family: Optimisation
+  technique: Optimisation réflexive de prompts (GEPA) pour les pipelines répétés
+  tier: CA
+  evidence:
+    phenomenon: not_applicable
+    mechanism: proposed
+    intervention:
+    - benefit_shown
+    transfer: transfer_unknown
+  population: tâches à métrique
+  models: Qwen3 8B et petits modèles ouverts
+  sources: Agrawal et al., ICLR 2026
+  triggers:
+  - repeated_pipeline
+  next: piste X6 (R02)
+- id: K41
+  family: Optimisation
+  technique: Mécanisme des gradients textuels
+  tier: QO
+  evidence:
+    phenomenon: not_applicable
+    mechanism: contested
+    intervention:
+    - mixed
+    transfer: transfer_unknown
+  population: optimisation automatique de prompts
+  models: divers
+  sources: ProTeGi ; arXiv:2512.13598
+  triggers:
+  - repeated_pipeline
+  next: question ouverte
+- id: K42
+  family: Personnalisation
+  technique: Mémoire et profil de l'utilisateur pour personnaliser
+  tier: QO
+  evidence:
+    phenomenon: shown
+    mechanism: untested
+    intervention:
+    - mixed
+    transfer: transfer_unknown
+  population: préférences évolutives ; rappel amélioré sans meilleur alignement
+  models: modèles de pointe 2025
+  sources: PersonaMem, COLM 2025 ; AlpsBench, SIGIR 2026
+  triggers:
+  - personalization
+  next: hors prompt (architecture de mémoire)
+- id: K43
+  family: Facteurs humains
+  technique: Section Hypothèses dans le livrable (fonction de forçage)
+  population: 'mitigation mesurée sur la revue de plans IA (n = 214), pas sur des prompts : transfert inconnu'
+  tier: OP
+  rule: R-AUTO-006
+  basis: reasoned
+  evidence:
+    phenomenon: shown
+    mechanism: proposed
+    intervention:
+    - benefit_shown
+    transfer: transfer_unknown
+  models: —
+  sources: arXiv:2601.18033
+  triggers:
+  - all
+  next: piste X9
+- id: K44
+  family: Méthodologie
+  technique: Correcteurs tolérants aux formes de réponse (artefacts d'évaluation)
+  tier: QO
+  evidence:
+    phenomenon: mixed
+    mechanism: proposed
+    intervention:
+    - untested
+    transfer: not_applicable
+  population: sensibilité au prompt peut-être gonflée par l'appariement rigide
+  models: —
+  sources: Hua et al. 2025, cité par arXiv:2605.29678
+  triggers:
+  - evaluation_design
+  next: appliquer aux pilotes
+- id: K45
+  family: Sélection contextuelle
+  technique: Routeur entraîné qui choisit un prompt, une technique ou un cadrage par requête (EmotionRL, routage
+    par requête)
+  tier: CA
+  evidence:
+    phenomenon: shown
+    mechanism: proposed
+    intervention:
+    - benefit_shown
+    transfer: transfer_unknown
+  population: 'EmotionRL : MLP externe sur embeddings, 6 émotions, récompense binaire ; égale ou dépasse la MOYENNE
+    des préfixes fixes, pas de comparaison chiffrée au neutre ni au meilleur préfixe ; mêmes benchmarks en test'
+  models: Qwen3-14B, Llama 3.3-70B, DeepSeek-V3.2 ; GPT-3.5, GPT-4 pour le routage par requête
+  sources: arXiv:2604.02236 ; Querywise Prompt Routing (IJRISS 2026) ; arXiv:2502.06487
+  triggers:
+  - repeated_pipeline
+  next: exige données annotées et jeu d'évaluation ; à comparer au meilleur prompt fixe
+- id: K46
+  family: Sélection contextuelle
+  technique: Sélection des techniques par le modèle lui-même, sans entraînement (base de connaissances, modules
+    choisis)
+  tier: CA
+  evidence:
+    phenomenon: not_applicable
+    mechanism: proposed
+    intervention:
+    - benefit_shown
+    transfer: transfer_unknown
+  population: BBEH (23 tâches) contre prompts standards et générateurs existants ; modèles non précisés dans le
+    résumé
+  models: non précisés ; PaLM 2 et GPT-4 pour Self-Discover
+  sources: arXiv:2510.18162 ; Zhou et al., NeurIPS 2024
+  triggers:
+  - all
+  next: c'est le mode de fonctionnement visé par 14 + registre ; à évaluer contre la baseline sans intermédiaire
+    (R-EVAL-004)
+- id: K47
+  family: N Motivation
+  technique: Retours positifs ou encouragements en cours d'interaction (tours successifs)
+  tier: CA
+  evidence:
+    phenomenon: shown
+    mechanism: contested
+    intervention:
+    - mixed
+    transfer: transfer_unknown
+  population: un retour, positif ou négatif, modifie la réponse suivante et la fait souvent préférer ; la valence
+    est confondue avec la consigne corrective ; invitation à la fierté > neutre sur GPT-4o
+  models: GPT-4o, GPT-4o mini, Mistral Small 24B, Phi-4
+  sources: arXiv:2601.05104 ; ISD 2026 (étude pilote, polonais) ; MINT
+  triggers:
+  - multi_turn
+  - motivation_framing
+  next: 'piste X12 : même contenu correctif, valence variée'
+- id: K48
+  family: N Motivation
+  technique: 'Combinaison motivationnelle C : ambition, responsabilité, vrais enjeux, liberté de méthode, droit
+    à l''échec honnête'
+  tier: CA
+  evidence:
+    phenomenon: not_applicable
+    mechanism: proposed
+    intervention:
+    - untested
+    transfer: not_applicable
+  population: hypothèse initiale de la recherche ; aucune mesure de la combinaison ; composantes de preuve inégale
+    (K30, K31 mesurées ou documentées, ambition et responsabilité documentées par Anthropic avec hausse du coût)
+  models: —
+  sources: R01 §5 bras C ; S-A2
+  triggers:
+  - motivation_framing
+  - agentic_code
+  - creative_diversity
+  next: bras C et C+K du pilote P0 (R04 §5) ; décomposition par retrait d'une composante en campagne de confirmation
+- id: K49
+  family: Saturation
+  technique: 'Contraintes facilitatrices : raison, définition ou exemple qui aident à respecter les autres exigences'
+  tier: CO
+  evidence:
+    phenomenon: not_applicable
+    mechanism: proposed
+    intervention:
+    - documented
+    transfer: current_models
+  population: recommandations fournisseurs (raisons et exemples) ; non mesuré dans les études de saturation
+  models: Claude, GPT (documentation)
+  sources: S-A1 ; R-CLAR-002 ; R-EX-001
+  triggers:
+  - many_constraints
+  next: inclure un bras « contraintes + raisons » dans X10
