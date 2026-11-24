@@ -1,5 +1,10 @@
 # Public history
 
+## 1.7.1 — candidate
+After the real-CLI qualification of 24 November 2026 (Claude Code 2.1.331 and Codex CLI 0.167.0 on Linux aarch64: generation, refusal to write and design audit all passed).
+- `notes.md` no longer starts with a `[segment …]` placeholder; it contains only the designer's notes.
+- The audit request asks for paths relative to the repository root, so reports do not expose local absolute paths.
+
 ## 1.7 — candidate
 - Launcher `pce.py`: generate or audit a prompt with the Claude Code or Codex CLI installed locally; interactive wizard or command line; one CLI invocation per run, no automatic loop; outputs (prompt, notes, request, manifest with hashes) in `out/`.
 - Segmented launcher profiles (TOML): fixed segments inserted verbatim (including from live files), a mission object, and segments written by the designer; deterministic assembly and checks; `--body-only` when another tool assembles. Two example profiles.

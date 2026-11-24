@@ -31,7 +31,7 @@ if sys.version_info < (3, 11):
     sys.exit("pce requires Python 3.11 or later (tomllib).")
 import tomllib  # noqa: E402
 
-VERSION = "1.7.0"
+VERSION = "1.7.1"
 ROOT = Path(__file__).resolve().parent
 TEMPLATES = ROOT / "launch" / "templates"
 ROLE_FILES = {
@@ -378,7 +378,7 @@ def extract_segments(response: str, profile: dict, nonce: str) -> tuple[dict[str
             if not body.strip():
                 raise PceError(f"segment '{sid}' is empty")
             out[sid] = body
-            notes.append(f"[segment {sid}]")
+            notes.append("\n")   # the segment itself is not part of the notes
             pos, open_m = m.end(), None
     if open_m:
         raise PceError(f"segment '{open_m.group(3)}' is not closed")

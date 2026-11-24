@@ -81,6 +81,8 @@ class FreeForm(Base):
         notes = (r / "notes.md").read_text(encoding="utf-8")
         self.assertIn("effort high", notes)
         self.assertNotIn("Do X carefully", notes)
+        self.assertNotIn("[segment", notes)
+        self.assertTrue(notes.startswith("Parameters: effort high."), notes)
         m = json.loads((r / "manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(m["status"], "candidate, not qualified")
         self.assertEqual(m["role_file"], "SYSTEM_PROMPT.md")
