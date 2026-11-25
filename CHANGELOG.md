@@ -1,5 +1,8 @@
 # Public history
 
+## 1.8.1 — candidate
+- Audit coverage correction (prepared as 1.7.3 on the 1.7.2 base, applied here on 1.8.0). The audit formulation of the invariant (and the segments that carry it) asks to look, for each defect found, for the same defect and its family across the scope, then to keep examining the rest; a finding, even a blocking one, does not end the examination; occurrences outside the scope are reported as leads. An audit is complete when its scope is covered and the indispensable checks are obtained or reported as impossible. The example review method no longer repeats the family search, so the rule appears once in an assembled review prompt. One evaluation case added. Launcher code unchanged apart from its version.
+
 ## 1.8.0 — candidate
 - Quick generation shares the standard designer instructions, pre-delivery checks and knowledge base access. Both modes use the CLI's reasoning effort. Quick is intended for prompts used without a follow-up audit.
 - Generation and audit read the CLI's structured output and record token usage and reported cost in their manifests, including after backend failures.

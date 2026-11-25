@@ -23,6 +23,7 @@
 | Blocking finding disputed without counter-evidence | Classification kept; disagreement recorded and submitted to the person in charge if it prevents moving on. |
 | A blocking finding remains open after a generic targeted resumption | Human arbitration; neither automatic relaunch nor promotion. |
 | A realisation agent adds an unjustified precautionary abstraction | Stay within scope; report the option separately. |
+| An auditor finds a first blocking defect early in the scope | Record it, look for the same defect and its family across the whole scope, then keep examining the other parts; report occurrences outside the scope separately as leads. |
 | A realisation agent cites the anti-over-engineering rule to justify duplicated or hard-to-change code | Not proportion: deliver the quality expected (readable, coherent, testable, easy to change) by the simplest means; an audit reports the defect with its concrete maintenance cost. |
 | An agent discovers that an indispensable control is missing | Establish the defect and deal with it within the mandate or report the blockage; no removal of security. |
 | Major but non-blocking finding | Listed, no dedicated cycle. |

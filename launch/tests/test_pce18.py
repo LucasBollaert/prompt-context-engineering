@@ -821,9 +821,43 @@ class Plug(BackendTest):
 
 class Release(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(pce.VERSION, "1.8.0")
-        self.assertIn("## 1.8.0", (ROOT / "CHANGELOG.md").read_text(encoding="utf-8"))
-        self.assertIn("# Verifications v1.8.0", (ROOT / "VERIFICATIONS.md").read_text(encoding="utf-8"))
+        self.assertEqual(pce.VERSION, "1.8.1")
+        self.assertIn("## 1.8.1", (ROOT / "CHANGELOG.md").read_text(encoding="utf-8"))
+        self.assertIn("# Verifications v1.8.1", (ROOT / "VERIFICATIONS.md").read_text(encoding="utf-8"))
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("PCE_PLUGS", readme)
         self.assertNotIn("no file reading", readme)
+
+
+class AuditCoverage(unittest.TestCase):
+    def test_coverage_rule_appears_once(self):
+        coverage = (
+            "Examine the whole scope. For each defect you find, look for the same defect and for defects of the "
+            "same family (same cause, pattern or misused interface) elsewhere in the scope, and record each "
+            "occurrence; then keep examining the rest of the scope for other defects. A finding, even a blocking "
+            "one, does not end the examination. Report occurrences outside the scope as leads without examining "
+            "them in depth."
+        )
+        completion = "(for an audit: the scope covered, the indispensable checks obtained or reported as impossible)"
+        test_root = ROOT / "out"
+        test_root.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=test_root) as tmp:
+            mission = Path(tmp) / "mission.md"
+            mission.write_text("Review the example calculator module.\n", encoding="utf-8")
+            out = Path(tmp) / "runs"
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                code = pce.main(["generate", "--backend", "fake", "--profile",
+                                 str(ROOT / "profils/examples/code_review.toml"),
+                                 "--mission-file", str(mission), "--out", str(out), "--dry-run"])
+            self.assertEqual(code, 0, err.getvalue())
+            requests = list(out.glob("*/request.md"))
+            self.assertEqual(len(requests), 1)
+            request = requests[0].read_text(encoding="utf-8")
+
+        self.assertEqual(request.count(coverage), 1)
+        self.assertEqual(request.casefold().count("same family"), 1)
+        self.assertEqual(request.count(completion), 1)
+        self.assertNotIn("look for other occurrences of the same family", request)
+        invariant = (ROOT / "audit/INVARIANT_PROPORTION_ARRET.md").read_text(encoding="utf-8")
+        self.assertIn(coverage, invariant)

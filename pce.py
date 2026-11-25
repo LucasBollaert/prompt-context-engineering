@@ -36,7 +36,7 @@ if sys.version_info < (3, 11):
     sys.exit("pce requires Python 3.11 or later (tomllib).")
 import tomllib  # noqa: E402
 
-VERSION = "1.8.0"
+VERSION = "1.8.1"
 ROOT = Path(__file__).resolve().parent
 TEMPLATES = ROOT / "launch" / "templates"
 ROLE_FILES = {
