@@ -47,6 +47,8 @@ python pce.py audit --role integration --prompt-file my_template.md --need-file 
 
 Useful options: `--model` (passed to the CLI), `--dry-run` (write the request, call nothing), `--backend-arg` (a short list of extra CLI options that cannot widen access, such as `--effort` for Claude Code or `--skip-git-repo-check` for Codex; anything else is refused), `--out` (output folder). If the designer lacks one blocking fact, it answers `BLOCKED:` with the question to ask, and no prompt is written.
 
+`generate` never runs an audit: auditing is always a separate `audit` command, used when the stakes justify it. For a single-use prompt, `--quick` lowers the cost further: one pass with the same designer instructions, no file reading (the knowledge base is not consulted), medium reasoning effort unless you pass `--effort`, and short notes. Use the standard mode for reusable templates, machine-read contracts or missions where a wrong prompt is costly.
+
 **What the launcher does not do**: it never retries, loops or chains runs on its own. Each run is **one invocation** of your CLI; inside it, the agent may take several internal model turns (for example to read the knowledge base), all counted against your quota. A generated prompt is a candidate: nothing is validated or deployed automatically.
 
 **Read-only, and how it is enforced.** The request goes on standard input; the CLI runs from the repository folder.

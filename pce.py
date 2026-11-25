@@ -31,7 +31,7 @@ if sys.version_info < (3, 11):
     sys.exit("pce requires Python 3.11 or later (tomllib).")
 import tomllib  # noqa: E402
 
-VERSION = "1.7.1"
+VERSION = "1.7.2"
 ROOT = Path(__file__).resolve().parent
 TEMPLATES = ROOT / "launch" / "templates"
 ROLE_FILES = {
@@ -44,6 +44,14 @@ SEG_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 VAR = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
 MARKER = re.compile(r"<<<PCE:([^:<>\s]*):(BEGIN|END) ([^<>\s]*)>>>")
 READ_ONLY_TOOLS = "Read,Grep,Glob"
+QUICK_EFFORT = "medium"
+KB_RULE = {
+    False: "You may read the knowledge base in `referentiel/` (start with `referentiel/00_INDEX.md` and "
+           "`referentiel/research/knowledge_registry.yaml`) when the situation calls for it. Do not load everything.",
+    True: "Quick mode: a single-use prompt, generated in one pass at lower cost. Do not read files in this "
+          "session: rely on your instructions and on the material in this request. Keep the notes after the "
+          "markers to what the user must know (assumptions that matter, checks outside the prompt).",
+}
 # Extra CLI options accepted through --backend-arg (name -> takes a value). Anything else is refused,
 # because it could widen the read-only tool set, the permissions or the instructions.
 BACKEND_ARGS = {
@@ -207,7 +215,7 @@ def data_block(tag: str, text: str, nonce: str, attrs: str = "", keep: bool = Fa
 
 def build_generate_request(profile: dict, need: str, target: str, context: str,
                            mission: str, sources: dict[str, str], nonce: str,
-                           language: str) -> str:
+                           language: str, quick: bool = False) -> str:
     seg_lines, blocks, refs = [], [], []
     for s in profile["segments"]:
         if s["kind"] == "reference":
@@ -233,6 +241,7 @@ def build_generate_request(profile: dict, need: str, target: str, context: str,
         "context": data_block("user_context", context, nonce),
         "mission": data_block("mission_object", mission, nonce, keep=True),
         "profile_notes": (profile.get("notes") or "").strip() or "(none)",
+        "kb_rule": KB_RULE[quick],
     })
 
 
@@ -267,25 +276,33 @@ def check_backend_args(backend: str, extra: list[str]) -> list[str]:
 
 
 def backend_command(backend: str, exe: str, system_file: Path, model: str | None,
-                    extra: list[str], last: Path) -> list[str]:
-    """The exact command line. The request itself is always sent on standard input."""
+                    extra: list[str], last: Path, quick: bool = False) -> list[str]:
+    """The exact command line. The request itself is always sent on standard input.
+    quick: no file tools at all (Claude) and medium reasoning effort unless --effort is given."""
     extra = check_backend_args(backend, extra)
+    user_effort = any(x.split("=", 1)[0] == "--effort" for x in extra)
     if backend == "claude":
         # --tools sets which built-in tools exist (read-only ones only); --allowedTools merely
         # pre-approves them. MCP tools are not covered by --tools: load none and deny any.
         # dontAsk denies every call that would need approval (e.g. reads outside the repository).
         cmd = [exe, "-p", "Answer the request given on standard input, exactly as it specifies.",
                "--system-prompt-file", str(system_file),
-               "--tools", READ_ONLY_TOOLS, "--allowedTools", READ_ONLY_TOOLS,
+               "--tools", "" if quick else READ_ONLY_TOOLS,
                "--strict-mcp-config", "--permission-mode", "dontAsk",
                "--no-session-persistence", "--output-format", "text"]
+        if not quick:
+            cmd += ["--allowedTools", READ_ONLY_TOOLS]
         if model:
             cmd += ["--model", model]
+        if quick and not user_effort:
+            cmd += ["--effort", QUICK_EFFORT]
         return cmd + extra + ["--disallowedTools", "mcp__*"]
     # Codex: read-only sandbox, no approval escalation, user config (MCP servers, profiles) and
     # execpolicy rules ignored, nothing persisted. The prompt "-" is read from standard input.
     cmd = [exe, "exec", "--sandbox", "read-only", "--config", 'approval_policy="never"',
            "--ignore-user-config", "--ignore-rules", "--ephemeral", "--output-last-message", str(last)]
+    if quick:
+        cmd += ["--config", f'model_reasoning_effort="{QUICK_EFFORT}"']
     if model:
         cmd += ["--model", model]
     return cmd + extra + ["-"]
@@ -309,7 +326,7 @@ def snapshot_role(role_file: Path, run: Path) -> tuple[str, Path]:
 
 
 def run_backend(backend: str, system_file: Path, system: str, request: str, workdir: Path,
-                model: str | None, extra: list[str]) -> str:
+                model: str | None, extra: list[str], quick: bool = False) -> str:
     """system_file is the run's snapshot of the role instructions; system is its text."""
     if backend == "fake":
         fake = os.environ.get("PCE_FAKE_RESPONSE_FILE")
@@ -321,7 +338,7 @@ def run_backend(backend: str, system_file: Path, system: str, request: str, work
         raise PceError(f"'{backend}' is not installed or not on PATH (see: python pce.py check)")
     with tempfile.TemporaryDirectory() as tmp:
         last = Path(tmp) / "last.md"
-        cmd = backend_command(backend, exe, system_file, model, extra, last)
+        cmd = backend_command(backend, exe, system_file, model, extra, last, quick)
         stdin = request if backend == "claude" else (
             f"<operating_instructions source=\"{system_file.name.removeprefix('role_')}\">\n{system}\n</operating_instructions>\n\n"
             f"Follow the operating instructions above for this request.\n\n{request}")
@@ -490,7 +507,8 @@ def cmd_generate(a: argparse.Namespace) -> int:
     nonce = secrets.token_hex(4)
     _FAKE_NONCE = nonce
     sources = load_sources(profile, values)   # the only read of fixed and reference files in this run
-    request = build_generate_request(profile, need, a.target or "", context, mission, sources, nonce, language)
+    quick = getattr(a, "quick", False)
+    request = build_generate_request(profile, need, a.target or "", context, mission, sources, nonce, language, quick)
     run = new_run_dir(Path(a.out), profile["name"])
     write_text(run / "request.md", request)
     if a.dry_run:
@@ -498,7 +516,7 @@ def cmd_generate(a: argparse.Namespace) -> int:
         return 0
     print(f"Invoking {a.backend} once, read-only (designer role)…", file=sys.stderr)
     role_text, role_snap = snapshot_role(ROLE_FILES["designer"], run)
-    response = run_backend(a.backend, role_snap, role_text, request, run, a.model, a.backend_arg or [])
+    response = run_backend(a.backend, role_snap, role_text, request, run, a.model, a.backend_arg or [], quick)
     write_text(run / "response_raw.md", response)
     generated, notes = extract_segments(response, profile, nonce)
     blocked = {k: v for k, v in generated.items() if v.lstrip().startswith("BLOCKED:")}
@@ -523,7 +541,7 @@ def cmd_generate(a: argparse.Namespace) -> int:
                            for s in profile["segments"] if s["kind"] == "fixed"},
         "reference_segments": {s["id"]: sha256(sources[s["id"]])
                                for s in profile["segments"] if s["kind"] == "reference"},
-        "body_only": a.body_only, "prompt_sha256": sha256(final), "status": "candidate, not qualified",
+        "body_only": a.body_only, "mode": "quick" if quick else "standard", "prompt_sha256": sha256(final), "status": "candidate, not qualified",
     })
     print(f"Prompt: {run / 'prompt.md'}\nNotes (assumptions, parameters, checks): {run / 'notes.md'}")
     return 0
@@ -641,6 +659,7 @@ def wizard() -> int:
     ns.target = ask("Target model and environment (e.g. Claude Code on a Python repo)", "")
     ns.need = ask_block("Describe what you need the prompt for")
     ns.need_file, ns.mission_file, ns.var, ns.prompt_language, ns.body_only = None, None, [], None, False
+    ns.quick = ask("Quick single-use mode (cheaper, no knowledge-base reading)? (y/N)", "n").lower().startswith("y")
     if ns.profile:
         prof = load_profile(Path(ns.profile))
         if any(s["kind"] == "mission" for s in prof["segments"]):
@@ -688,6 +707,8 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--var", action="append", help="name=value for {{name}} in fixed segments (repeatable)")
     g.add_argument("--prompt-language", help="language policy for the produced prompt")
     g.add_argument("--body-only", action="store_true", help="output only the generated segments (when another tool assembles)")
+    g.add_argument("--quick", action="store_true",
+                   help="single-use prompt at lower cost: one pass, no file reading, medium effort (same designer instructions)")
     g.set_defaults(fn=cmd_generate)
 
     au = sub.add_parser("audit", help="audit a prompt in a fresh session")

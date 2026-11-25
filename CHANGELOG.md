@@ -1,5 +1,8 @@
 # Public history
 
+## 1.7.2 — candidate
+- `generate --quick` for single-use prompts at lower cost: same designer instructions, no file tools (Claude Code `--tools ""`; Codex is told not to read files), medium reasoning effort unless `--effort` is given, short notes. Recorded as `"mode": "quick"` in the manifest. The README states that `generate` never audits.
+
 ## 1.7.1 — candidate
 After the real-CLI qualification of 24 November 2026 (Claude Code 2.1.331 and Codex CLI 0.167.0 on Linux aarch64: generation, refusal to write and design audit all passed).
 - `notes.md` no longer starts with a `[segment …]` placeholder; it contains only the designer's notes.

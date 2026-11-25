@@ -605,11 +605,44 @@ class Qualification(unittest.TestCase):
         self.assertIn("FAIL | claude 2 refusal: a file was written", out)
 
 
+class Quick(Base):
+    """--quick: single-use prompt at lower cost, same designer instructions, no audit."""
+
+    def test_quick_command_lines(self):
+        role = pce.ROLE_FILES["designer"]
+        c = pce.backend_command("claude", "claude", role, None, [], Path("x"), quick=True)
+        self.assertEqual(c[c.index("--tools") + 1], "")                    # no file tool at all
+        self.assertEqual(c[c.index("--effort") + 1], pce.QUICK_EFFORT)
+        self.assertNotIn("--allowedTools", c)
+        self.assertEqual(c[c.index("--permission-mode") + 1], "dontAsk")
+        self.assertEqual(c[-2:], ["--disallowedTools", "mcp__*"])
+        c2 = pce.backend_command("claude", "claude", role, None, ["--effort", "high"], Path("x"), quick=True)
+        self.assertEqual(c2.count("--effort"), 1)                           # the user's choice wins
+        x = pce.backend_command("codex", "codex", role, None, [], Path("x"), quick=True)
+        self.assertIn(f'model_reasoning_effort="{pce.QUICK_EFFORT}"', x)
+        self.assertEqual(x[x.index("--sandbox") + 1], "read-only")
+        std = pce.backend_command("claude", "claude", role, None, [], Path("x"))
+        self.assertEqual(std[std.index("--tools") + 1], "Read,Grep,Glob")
+        self.assertNotIn("--effort", std)
+
+    def test_quick_request_keeps_designer_and_is_recorded(self):
+        code, _, _ = run(["generate", "--backend", "fake", "--quick", "--need", "x", "--out", str(self.out)], seg("prompt", "P"))
+        self.assertEqual(code, 0)
+        r = self.only_run()
+        req = (r / "request.md").read_text(encoding="utf-8")
+        self.assertIn("Quick mode", req)
+        self.assertNotIn("You may read the knowledge base", req)
+        m = json.loads((r / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(m["mode"], "quick")
+        self.assertEqual(m["role_file"], "SYSTEM_PROMPT.md")
+        self.assertFalse(list(self.out.glob("*audit*")))
+
+
 class Templates(unittest.TestCase):
     def test_templates_only_use_known_placeholders(self):
         known = {"generate_free.md": {"target", "prompt_language", "need", "context", "segments",
                                       "profile_name", "profile_version", "profile_description",
-                                      "fixed_segments", "mission", "profile_notes", "references"},
+                                      "fixed_segments", "mission", "profile_notes", "references", "kb_rule"},
                  "generate_profile.md": None, "audit.md": {"prompt", "need", "target", "context"}}
         known["generate_profile.md"] = known["generate_free.md"]
         for name, allowed in known.items():
