@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import errno
 import hashlib
 import json
 import os
@@ -25,13 +26,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from collections.abc import Callable
+from contextlib import contextmanager
+from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 
 if sys.version_info < (3, 11):
     sys.exit("pce requires Python 3.11 or later (tomllib).")
 import tomllib  # noqa: E402
 
-VERSION = "1.7.2"
+VERSION = "1.8.0"
 ROOT = Path(__file__).resolve().parent
 TEMPLATES = ROOT / "launch" / "templates"
 ROLE_FILES = {
@@ -44,13 +50,15 @@ SEG_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 VAR = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
 MARKER = re.compile(r"<<<PCE:([^:<>\s]*):(BEGIN|END) ([^<>\s]*)>>>")
 READ_ONLY_TOOLS = "Read,Grep,Glob"
-QUICK_EFFORT = "medium"
+DESIGN_EFFORT = "medium"
+QUICK_SESSION_MAX_AGE = 3600
+QUICK_MAX_CONTEXT = 150_000
 KB_RULE = {
     False: "You may read the knowledge base in `referentiel/` (start with `referentiel/00_INDEX.md` and "
            "`referentiel/research/knowledge_registry.yaml`) when the situation calls for it. Do not load everything.",
-    True: "Quick mode: a single-use prompt, generated in one pass at lower cost. Do not read files in this "
-          "session: rely on your instructions and on the material in this request. Keep the notes after the "
-          "markers to what the user must know (assumptions that matter, checks outside the prompt).",
+    True: "Quick mode: consult the knowledge base in `referentiel/` when relevant. Start with "
+          "`referentiel/00_INDEX.md` and `referentiel/research/knowledge_registry.yaml`, "
+          "and read only what this request calls for.",
 }
 # Extra CLI options accepted through --backend-arg (name -> takes a value). Anything else is refused,
 # because it could widen the read-only tool set, the permissions or the instructions.
@@ -62,9 +70,10 @@ BACKEND_ARGS = {
 REQUIRED_FLAGS = {
     # --system-prompt-file is documented but not listed by `claude --help` (2.1.331): its sibling is checked.
     "claude": ["--system-prompt", "--tools", "--allowedTools", "--disallowedTools",
-               "--strict-mcp-config", "--permission-mode", "--no-session-persistence", "--output-format"],
+               "--strict-mcp-config", "--permission-mode", "--no-session-persistence", "--output-format",
+               "--resume"],
     "codex": ["--sandbox", "--ignore-user-config", "--ignore-rules", "--ephemeral",
-              "--output-last-message", "--config"],
+              "--output-last-message", "--config", "--json"],
 }
 
 
@@ -275,10 +284,34 @@ def check_backend_args(backend: str, extra: list[str]) -> list[str]:
     return extra
 
 
+def launch_prefix() -> tuple[str, ...]:
+    config = os.environ.get("PCE_PLUGS")
+    if config == "":
+        return ()
+    path = Path(config).expanduser() if config is not None else Path.home() / ".config" / "pce" / "plugs.toml"
+    try:
+        with path.open("rb") as stream:
+            data = tomllib.load(stream)
+    except FileNotFoundError:
+        if path.is_symlink():
+            raise PceError(f"{path}: launch configuration link has no target") from None
+        return ()
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
+        raise PceError(f"{path}: could not read launch configuration: {e}") from None
+    launch = data.get("launch")
+    if (set(data) != {"launch"} or not isinstance(launch, list) or not launch or not launch[0]
+            or any(not isinstance(arg, str) or "\x00" in arg for arg in launch)):
+        raise PceError(f"{path}: expected only 'launch', a non-empty list of command strings")
+    exe = shutil.which(launch[0])
+    if exe is None:
+        raise PceError(f"{path}: launch executable not found: {launch[0]!r}")
+    return (os.path.abspath(exe), *launch[1:])
+
+
 def backend_command(backend: str, exe: str, system_file: Path, model: str | None,
-                    extra: list[str], last: Path, quick: bool = False) -> list[str]:
-    """The exact command line. The request itself is always sent on standard input.
-    quick: no file tools at all (Claude) and medium reasoning effort unless --effort is given."""
+                    extra: list[str], last: Path, quick: bool = False, *, audit: bool = False,
+                    resume: str | None = None, launch: tuple[str, ...] = ()) -> list[str]:
+    """The exact command line. The request itself is always sent on standard input."""
     extra = check_backend_args(backend, extra)
     user_effort = any(x.split("=", 1)[0] == "--effort" for x in extra)
     if backend == "claude":
@@ -287,25 +320,28 @@ def backend_command(backend: str, exe: str, system_file: Path, model: str | None
         # dontAsk denies every call that would need approval (e.g. reads outside the repository).
         cmd = [exe, "-p", "Answer the request given on standard input, exactly as it specifies.",
                "--system-prompt-file", str(system_file),
-               "--tools", "" if quick else READ_ONLY_TOOLS,
+               "--tools", READ_ONLY_TOOLS,
                "--strict-mcp-config", "--permission-mode", "dontAsk",
-               "--no-session-persistence", "--output-format", "text"]
-        if not quick:
-            cmd += ["--allowedTools", READ_ONLY_TOOLS]
+               "--output-format", "json", "--allowedTools", READ_ONLY_TOOLS]
+        if quick and not audit:
+            if resume is not None:
+                cmd += ["--resume", resume]
+        else:
+            cmd += ["--no-session-persistence"]
         if model:
             cmd += ["--model", model]
-        if quick and not user_effort:
-            cmd += ["--effort", QUICK_EFFORT]
-        return cmd + extra + ["--disallowedTools", "mcp__*"]
+        if not audit and not user_effort:
+            cmd += ["--effort", DESIGN_EFFORT]
+        return [*launch, *cmd, *extra, "--disallowedTools", "mcp__*"]
     # Codex: read-only sandbox, no approval escalation, user config (MCP servers, profiles) and
     # execpolicy rules ignored, nothing persisted. The prompt "-" is read from standard input.
     cmd = [exe, "exec", "--sandbox", "read-only", "--config", 'approval_policy="never"',
-           "--ignore-user-config", "--ignore-rules", "--ephemeral", "--output-last-message", str(last)]
-    if quick:
-        cmd += ["--config", f'model_reasoning_effort="{QUICK_EFFORT}"']
+           "--ignore-user-config", "--ignore-rules", "--ephemeral", "--json", "--output-last-message", str(last)]
+    if not audit:
+        cmd += ["--config", f'model_reasoning_effort="{DESIGN_EFFORT}"']
     if model:
         cmd += ["--model", model]
-    return cmd + extra + ["-"]
+    return [*launch, *cmd, *extra, "-"]
 
 
 def instructions_channel(backend: str) -> str:
@@ -325,33 +361,108 @@ def snapshot_role(role_file: Path, run: Path) -> tuple[str, Path]:
     return text, snap
 
 
+@dataclass
+class BackendResult:
+    response: str
+    usage: dict[str, int | float | None]
+    session_id: str | None = None
+    context_tokens: int | None = None
+    launch_plug: bool = False
+
+
+def token_count(value: object) -> int | None:
+    return value if type(value) is int and value >= 0 else None
+
+
+def usage_fields(data: object, cache_read: str, cache_write: str) -> dict[str, int | float | None]:
+    counters = data if isinstance(data, dict) else {}
+    return {"input_tokens": token_count(counters.get("input_tokens")),
+            "cache_read": token_count(counters.get(cache_read)),
+            "cache_write": token_count(counters.get(cache_write)),
+            "output_tokens": token_count(counters.get("output_tokens")),
+            "cost_usd": None}
+
+
+def claude_response(stdout: bytes) -> BackendResult:
+    data = json.loads(stdout)
+    if (not isinstance(data, dict) or data.get("is_error") is not False or data.get("subtype") != "success"
+            or not isinstance(data.get("result"), str)):
+        detail = data.get("result") if isinstance(data, dict) else None
+        raise PceError("claude returned an unsuccessful or invalid result"
+                       + (f":\n{detail[-2000:]}" if isinstance(detail, str) and detail else ""))
+    counters = data.get("usage")
+    usage = usage_fields(counters, "cache_read_input_tokens", "cache_creation_input_tokens")
+    cost = data.get("total_cost_usd")
+    if type(cost) in (int, float) and 0 <= cost < float("inf"):
+        usage["cost_usd"] = cost
+    session_id = data.get("session_id")
+    iterations = counters.get("iterations") if isinstance(counters, dict) else None
+    context = None
+    if isinstance(iterations, list) and iterations:
+        last = usage_fields(iterations[-1], "cache_read_input_tokens", "cache_creation_input_tokens")
+        counts = (last["input_tokens"], last["cache_read"], last["cache_write"])
+        if None not in counts:
+            context = sum(counts)
+    return BackendResult(data["result"], usage, session_id if isinstance(session_id, str) else None, context)
+
+
+def codex_response(stdout: bytes, last: Path) -> BackendResult:
+    response = read_text(last)
+    usage = None
+    for line in stdout.splitlines():
+        if line.strip():
+            event = json.loads(line)
+            if not isinstance(event, dict) or not isinstance(event.get("type"), str):
+                raise PceError("codex returned an invalid JSON event")
+            if event["type"] == "turn.completed":
+                usage = event.get("usage")
+    counts = usage_fields(usage, "cached_input_tokens", "cache_write_input_tokens")
+    total, cached = counts["input_tokens"], counts["cache_read"]
+    counts["input_tokens"] = total - cached if total is not None and cached is not None and cached <= total else None
+    return BackendResult(response, counts)
+
+
 def run_backend(backend: str, system_file: Path, system: str, request: str, workdir: Path,
-                model: str | None, extra: list[str], quick: bool = False) -> str:
+                model: str | None, extra: list[str], quick: bool = False, *, audit: bool = False,
+                resume: str | None = None, launch: tuple[str, ...] | None = None) -> BackendResult:
     """system_file is the run's snapshot of the role instructions; system is its text."""
     if backend == "fake":
         fake = os.environ.get("PCE_FAKE_RESPONSE_FILE")
         if not fake:
             raise PceError("fake backend: set PCE_FAKE_RESPONSE_FILE")
-        return fill_fake(read_text(Path(fake)))
+        return BackendResult(fill_fake(read_text(Path(fake))), usage_fields(None, "", ""))
+    if launch is None:
+        launch = launch_prefix()
     exe = shutil.which(backend)
     if not exe:
         raise PceError(f"'{backend}' is not installed or not on PATH (see: python pce.py check)")
     with tempfile.TemporaryDirectory() as tmp:
         last = Path(tmp) / "last.md"
-        cmd = backend_command(backend, exe, system_file, model, extra, last, quick)
+        cmd = backend_command(backend, exe, system_file, model, extra, last, quick, audit=audit,
+                              resume=resume, launch=launch)
         stdin = request if backend == "claude" else (
             f"<operating_instructions source=\"{system_file.name.removeprefix('role_')}\">\n{system}\n</operating_instructions>\n\n"
             f"Follow the operating instructions above for this request.\n\n{request}")
         # Bytes in and out: no line-ending translation of the request or the answer (Windows).
-        proc = subprocess.run(cmd, input=stdin.encode("utf-8"), capture_output=True, cwd=ROOT)
-        stdout = proc.stdout.decode("utf-8", errors="replace")
-        if proc.returncode != 0:
-            # Claude Code prints some errors (e.g. authentication) on stdout, not stderr.
-            err = proc.stderr.decode("utf-8", errors="replace").strip() or stdout.strip()
-            raise PceError(f"{backend} failed (code {proc.returncode}):\n{err[-2000:]}")
-        if backend == "codex":
-            return read_text(last) if last.exists() else stdout
-        return stdout
+        try:
+            proc = subprocess.run(cmd, input=stdin.encode("utf-8"), capture_output=True, cwd=ROOT)
+        except OSError as e:
+            raise PceError(f"could not launch {backend}: {e}") from None
+        try:
+            if proc.returncode != 0:
+                # Claude Code prints some errors (e.g. authentication) on stdout, not stderr.
+                err = proc.stderr.strip() or proc.stdout.strip()
+                raise PceError(f"{backend} failed (code {proc.returncode}):\n"
+                               f"{err.decode('utf-8', errors='replace')[-2000:]}")
+            result = claude_response(proc.stdout) if backend == "claude" else codex_response(proc.stdout, last)
+            result.launch_plug = bool(launch)
+            return result
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+            (workdir / "response_raw.md").write_bytes(proc.stdout)
+            raise PceError(f"{backend} output could not be read: {e}") from None
+        except PceError:
+            (workdir / "response_raw.md").write_bytes(proc.stdout)
+            raise
 
 
 _FAKE_NONCE = None
@@ -474,6 +585,140 @@ def write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def quick_state(path: Path, key: dict, now: float) -> dict | None:
+    try:
+        state = json.loads(path.read_bytes())
+    except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(state, dict) or any(state.get(k) != v for k, v in key.items()):
+        return None
+    created, session_id = state.get("created"), state.get("session_id")
+    context = token_count(state.get("context_tokens"))
+    if (type(created) in (float, int) and 0 <= now - created < QUICK_SESSION_MAX_AGE
+            and context is not None and context < QUICK_MAX_CONTEXT
+            and isinstance(session_id, str) and session_id):
+        return state
+    return None
+
+
+def replace_quick_state(path: Path, state: dict) -> None:
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".quick-session-", delete=False) as tmp:
+        temp_path = Path(tmp.name)
+    try:
+        write_json(temp_path, state)
+        os.replace(temp_path, path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+@contextmanager
+def quick_guard(base: Path, *, blocking: bool):
+    """Serialize a lock replacement with the owner's final state update."""
+    fd = os.open(base / ".quick-session.guard", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if os.name == "nt":
+            import msvcrt
+            try:
+                msvcrt.locking(fd, msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK, 1)
+            except OSError as e:
+                if blocking or e.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
+                yield False
+                return
+        else:
+            import fcntl
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                yield False
+                return
+        yield True
+    finally:
+        os.close(fd)
+
+
+def claim_quick_lock(lock: Path, now: float) -> bytes | None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    with quick_guard(lock.parent, blocking=False) as acquired:
+        if not acquired:
+            return None
+        try:
+            fd = os.open(lock, flags, 0o600)
+        except FileExistsError:
+            if now - lock.stat().st_mtime <= QUICK_SESSION_MAX_AGE:
+                return None
+            lock.unlink()
+            fd = os.open(lock, flags, 0o600)
+        owner = secrets.token_hex(16).encode("ascii")
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(owner)
+            os.utime(lock, (now, now))
+        except BaseException:
+            lock.unlink(missing_ok=True)
+            raise
+        return owner
+
+
+def finish_quick_lock(lock: Path, owner: bytes, path: Path, replacement: dict | None) -> None:
+    with quick_guard(lock.parent, blocking=True):
+        try:
+            current_owner = lock.read_bytes()
+        except FileNotFoundError:
+            return
+        if current_owner != owner:
+            return
+        try:
+            if replacement is None:
+                path.unlink(missing_ok=True)
+            else:
+                replace_quick_state(path, replacement)
+        finally:
+            lock.unlink(missing_ok=True)
+
+
+def run_generate_backend(a: argparse.Namespace, role_snap: Path, role_text: str, role_hash: str,
+                         request: str, run: Path, quick: bool, *,
+                         clock: Callable[[], float]) -> tuple[BackendResult, dict | None]:
+    extra = a.backend_arg or []
+    if a.backend != "claude" or not quick:
+        return run_backend(a.backend, role_snap, role_text, request, run, a.model, extra, quick), None
+
+    launch = launch_prefix()
+    path = run.parent / ".quick-session.json"
+    lock = run.parent / ".quick-session.lock"
+    key = {"backend": a.backend, "model": a.model, "backend_args": extra, "role_sha256": role_hash}
+    now = clock()
+    owner = claim_quick_lock(lock, now)
+    replacement = None
+    try:
+        state = quick_state(path, key, now) if owner is not None else None
+        resume = state["session_id"] if state else None
+        try:
+            result = run_backend(a.backend, role_snap, role_text, request, run, a.model, extra, quick,
+                                 resume=resume, launch=launch)
+        except PceError as e:
+            if resume is not None:
+                raise PceError(f"{e}\nPlease run again to start a fresh session.") from None
+            raise
+        total = result.usage["cost_usd"]
+        if result.session_id:
+            replacement = key | {"created": state["created"] if state else now,
+                                 "session_id": result.session_id, "context_tokens": result.context_tokens,
+                                 "total_cost_usd": total}
+        if state:
+            previous = state.get("total_cost_usd")
+            # Claude reports per-call tokens and cumulative dollars for a resumed session.
+            result.usage["cost_usd"] = (float(Decimal(str(total)) - Decimal(str(previous)))
+                                        if total is not None and type(previous) in (int, float) else None)
+        session = {"reused": state is not None, "age_s": now - state["created"] if state else None,
+                   "context_tokens": result.context_tokens}
+        return result, session
+    finally:
+        if owner is not None:
+            finish_quick_lock(lock, owner, path, replacement)
+
+
 # --------------------------------------------------------------------------- commands
 def parse_vars(items: list[str]) -> dict[str, str]:
     out = {}
@@ -516,33 +761,42 @@ def cmd_generate(a: argparse.Namespace) -> int:
         return 0
     print(f"Invoking {a.backend} once, read-only (designer role)…", file=sys.stderr)
     role_text, role_snap = snapshot_role(ROLE_FILES["designer"], run)
-    response = run_backend(a.backend, role_snap, role_text, request, run, a.model, a.backend_arg or [], quick)
+    role_hash = sha256(role_text)
+    result, session = run_generate_backend(a, role_snap, role_text, role_hash, request, run, quick, clock=time.time)
+    response = result.response
     write_text(run / "response_raw.md", response)
-    generated, notes = extract_segments(response, profile, nonce)
-    blocked = {k: v for k, v in generated.items() if v.lstrip().startswith("BLOCKED:")}
-    if blocked:
-        write_text(run / "notes.md", notes + "\n")
-        for k, v in blocked.items():
-            print(f"Blocked on segment '{k}': {v.strip()[len('BLOCKED:'):].strip()}")
-        print(f"No prompt written. Answer the question, then run again. Details: {run}")
-        return 3
-    final = assemble(profile, generated, mission, sources, a.body_only)
-    write_text(run / "prompt.md", final)
-    write_text(run / "notes.md", notes + "\n")
-    write_json(run / "segments.json", generated)
-    write_json(run / "manifest.json", {
+    manifest = {
         "pce_version": VERSION, "repo_commit": git_commit(), "date": _dt.datetime.now().isoformat(timespec="seconds"),
-        "backend": a.backend, "model": a.model, "cli_invocations": 1,
+        "backend": a.backend, "model": a.model, "cli_invocations": 1, "usage": result.usage,
+        "launch_plug": result.launch_plug,
         "instructions_channel": instructions_channel(a.backend), "role_file": ROLE_FILES["designer"].name,
-        "role_sha256": sha256(role_text),
+        "role_sha256": role_hash,
+        **({"session": session} if session is not None else {}),
         "profile": profile["name"], "profile_version": profile["version"],
         "profile_file": None if profile.get("_builtin") else str(profile["_path"]),
         "fixed_segments": {s["id"]: sha256(sources[s["id"]])
                            for s in profile["segments"] if s["kind"] == "fixed"},
         "reference_segments": {s["id"]: sha256(sources[s["id"]])
                                for s in profile["segments"] if s["kind"] == "reference"},
-        "body_only": a.body_only, "mode": "quick" if quick else "standard", "prompt_sha256": sha256(final), "status": "candidate, not qualified",
-    })
+        "body_only": a.body_only, "mode": "quick" if quick else "standard", "status": "invalid response",
+    }
+    try:
+        generated, notes = extract_segments(response, profile, nonce)
+        blocked = {k: v for k, v in generated.items() if v.lstrip().startswith("BLOCKED:")}
+        if blocked:
+            manifest["status"] = "blocked"
+            write_text(run / "notes.md", notes + "\n")
+            for k, v in blocked.items():
+                print(f"Blocked on segment '{k}': {v.strip()[len('BLOCKED:'):].strip()}")
+            print(f"No prompt written. Answer the question, then run again. Details: {run}")
+            return 3
+        final = assemble(profile, generated, mission, sources, a.body_only)
+        write_text(run / "prompt.md", final)
+        write_text(run / "notes.md", notes + "\n")
+        write_json(run / "segments.json", generated)
+        manifest.update(prompt_sha256=sha256(final), status="candidate, not qualified")
+    finally:
+        write_json(run / "manifest.json", manifest)
     print(f"Prompt: {run / 'prompt.md'}\nNotes (assumptions, parameters, checks): {run / 'notes.md'}")
     return 0
 
@@ -559,11 +813,12 @@ def cmd_audit(a: argparse.Namespace) -> int:
         return 0
     print(f"Invoking {a.backend} once, read-only ({a.role} auditor, fresh session)…", file=sys.stderr)
     role_text, role_snap = snapshot_role(ROLE_FILES[a.role], run)
-    report = run_backend(a.backend, role_snap, role_text, request, run, a.model, a.backend_arg or [])
-    write_text(run / "report.md", report)
+    result = run_backend(a.backend, role_snap, role_text, request, run, a.model, a.backend_arg or [], audit=True)
+    write_text(run / "report.md", result.response)
     write_json(run / "manifest.json", {
         "pce_version": VERSION, "repo_commit": git_commit(), "date": _dt.datetime.now().isoformat(timespec="seconds"),
-        "backend": a.backend, "model": a.model, "cli_invocations": 1,
+        "backend": a.backend, "model": a.model, "cli_invocations": 1, "usage": result.usage,
+        "launch_plug": result.launch_plug,
         "instructions_channel": instructions_channel(a.backend), "role_file": ROLE_FILES[a.role].name,
         "role_sha256": sha256(role_text), "audited_prompt_sha256": sha256(prompt), "context_provided": bool(context.strip()),
     })
@@ -659,7 +914,7 @@ def wizard() -> int:
     ns.target = ask("Target model and environment (e.g. Claude Code on a Python repo)", "")
     ns.need = ask_block("Describe what you need the prompt for")
     ns.need_file, ns.mission_file, ns.var, ns.prompt_language, ns.body_only = None, None, [], None, False
-    ns.quick = ask("Quick single-use mode (cheaper, no knowledge-base reading)? (y/N)", "n").lower().startswith("y")
+    ns.quick = ask("Quick mode (same design process, skip follow-up review)? (y/N)", "n").lower().startswith("y")
     if ns.profile:
         prof = load_profile(Path(ns.profile))
         if any(s["kind"] == "mission" for s in prof["segments"]):
@@ -708,7 +963,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--prompt-language", help="language policy for the produced prompt")
     g.add_argument("--body-only", action="store_true", help="output only the generated segments (when another tool assembles)")
     g.add_argument("--quick", action="store_true",
-                   help="single-use prompt at lower cost: one pass, no file reading, medium effort (same designer instructions)")
+                   help="same design process and effort, for prompts used without a follow-up audit")
     g.set_defaults(fn=cmd_generate)
 
     au = sub.add_parser("audit", help="audit a prompt in a fresh session")

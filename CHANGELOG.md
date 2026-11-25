@@ -1,5 +1,11 @@
 # Public history
 
+## 1.8.0 — candidate
+- Quick generation shares the standard designer instructions, pre-delivery checks, knowledge base access and default reasoning effort. It is intended for prompts used without a follow-up audit.
+- Generation and audit read the CLI's structured output and record token usage and reported cost in their manifests.
+- Quick Claude Code runs can resume a matching session within age and context limits. Manifests show reuse and the cost of the individual call. A failed resume clears saved state and exits after the single invocation.
+- An optional user configuration can prepend a trusted launcher to the CLI command. Direct launch remains the default.
+
 ## 1.7.2 — candidate
 - `generate --quick` for single-use prompts at lower cost: same designer instructions, no file tools (Claude Code `--tools ""`; Codex is told not to read files), medium reasoning effort unless `--effort` is given, short notes. Recorded as `"mode": "quick"` in the manifest. The README states that `generate` never audits.
 

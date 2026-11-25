@@ -14,6 +14,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+os.environ["PCE_PLUGS"] = ""
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 import pce  # noqa: E402
@@ -496,14 +497,15 @@ class Manifest(unittest.TestCase):
 
 
 STUB = r"""#!{python}
-import pathlib, re, sys
+import json, pathlib, re, sys
 args = sys.argv[1:]
 role = pathlib.Path(args[args.index("--system-prompt-file") + 1])
 data = sys.stdin.buffer.read()
 pathlib.Path({capture!r}).write_bytes(data)
 nonce = re.search(rb"<<<PCE:([0-9a-f]+):BEGIN prompt>>>", data).group(1).decode()
-sys.stdout.buffer.write(("<<<PCE:%s:BEGIN prompt>>>\r\nP\r\n<<<PCE:%s:END prompt>>>\r\nrole=%s\r\n"
-                         % (nonce, nonce, role.read_text(encoding="utf-8")[:4])).encode())
+result = ("<<<PCE:%s:BEGIN prompt>>>\r\nP\r\n<<<PCE:%s:END prompt>>>\r\nrole=%s\r\n"
+          % (nonce, nonce, role.read_text(encoding="utf-8")[:4]))
+print(json.dumps({{"subtype": "success", "is_error": False, "result": result}}))
 """
 
 
@@ -550,12 +552,13 @@ class RealSubprocess(Base):
         self.assertIn("Authentication error", err)
 
 GOOD_STUB = """#!{python}
-import re, sys
-if "--help" in sys.argv: print("--system-prompt --tools --allowedTools --disallowedTools --strict-mcp-config --permission-mode --no-session-persistence --output-format"); sys.exit()
+import json, re, sys
+if "--help" in sys.argv: print("--system-prompt --tools --allowedTools --disallowedTools --strict-mcp-config --permission-mode --no-session-persistence --output-format --resume"); sys.exit()
 if "--version" in sys.argv: print("stub"); sys.exit()
 d = sys.stdin.read(); m = re.search(r"<<<PCE:([0-9a-f]+):BEGIN prompt>>>", d)
 {action}
-print(f"<<<PCE:{{m.group(1)}}:BEGIN prompt>>>\\nSummarise.\\n<<<PCE:{{m.group(1)}}:END prompt>>>" if m else "Verdict: corrections required.")
+result = f"<<<PCE:{{m.group(1)}}:BEGIN prompt>>>\\nSummarise.\\n<<<PCE:{{m.group(1)}}:END prompt>>>" if m else "Verdict: corrections required."
+print(json.dumps({{"subtype": "success", "is_error": False, "result": result}}))
 """
 
 
@@ -611,19 +614,19 @@ class Quick(Base):
     def test_quick_command_lines(self):
         role = pce.ROLE_FILES["designer"]
         c = pce.backend_command("claude", "claude", role, None, [], Path("x"), quick=True)
-        self.assertEqual(c[c.index("--tools") + 1], "")                    # no file tool at all
-        self.assertEqual(c[c.index("--effort") + 1], pce.QUICK_EFFORT)
-        self.assertNotIn("--allowedTools", c)
+        self.assertEqual(c[c.index("--tools") + 1], "Read,Grep,Glob")
+        self.assertEqual(c[c.index("--effort") + 1], "medium")
+        self.assertEqual(c[c.index("--allowedTools") + 1], "Read,Grep,Glob")
         self.assertEqual(c[c.index("--permission-mode") + 1], "dontAsk")
         self.assertEqual(c[-2:], ["--disallowedTools", "mcp__*"])
         c2 = pce.backend_command("claude", "claude", role, None, ["--effort", "high"], Path("x"), quick=True)
         self.assertEqual(c2.count("--effort"), 1)                           # the user's choice wins
         x = pce.backend_command("codex", "codex", role, None, [], Path("x"), quick=True)
-        self.assertIn(f'model_reasoning_effort="{pce.QUICK_EFFORT}"', x)
+        self.assertIn('model_reasoning_effort="medium"', x)
         self.assertEqual(x[x.index("--sandbox") + 1], "read-only")
         std = pce.backend_command("claude", "claude", role, None, [], Path("x"))
         self.assertEqual(std[std.index("--tools") + 1], "Read,Grep,Glob")
-        self.assertNotIn("--effort", std)
+        self.assertEqual(std[std.index("--effort") + 1], c[c.index("--effort") + 1])
 
     def test_quick_request_keeps_designer_and_is_recorded(self):
         code, _, _ = run(["generate", "--backend", "fake", "--quick", "--need", "x", "--out", str(self.out)], seg("prompt", "P"))

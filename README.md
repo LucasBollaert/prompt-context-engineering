@@ -27,7 +27,7 @@ out/<date>-<name>/
   prompt.md       the prompt, ready to copy
   notes.md        recommended parameters, assumptions, open decisions, checks outside the prompt
   request.md      exactly what was sent to the CLI
-  manifest.json   versions and hashes (role file, profile, fixed segments, prompt)
+  manifest.json   versions, hashes, usage and launch metadata
 ```
 
 The same from the command line:
@@ -47,14 +47,28 @@ python pce.py audit --role integration --prompt-file my_template.md --need-file 
 
 Useful options: `--model` (passed to the CLI), `--dry-run` (write the request, call nothing), `--backend-arg` (a short list of extra CLI options that cannot widen access, such as `--effort` for Claude Code or `--skip-git-repo-check` for Codex; anything else is refused), `--out` (output folder). If the designer lacks one blocking fact, it answers `BLOCKED:` with the question to ask, and no prompt is written.
 
-`generate` never runs an audit: auditing is always a separate `audit` command, used when the stakes justify it. For a single-use prompt, `--quick` lowers the cost further: one pass with the same designer instructions, no file reading (the knowledge base is not consulted), medium reasoning effort unless you pass `--effort`, and short notes. Use the standard mode for reusable templates, machine-read contracts or missions where a wrong prompt is costly.
+Use `generate --quick` for prompts you will use without a follow-up audit. Both generation modes use the same designer instructions, pre-delivery checks, knowledge base access and medium reasoning effort. An explicit `--backend-arg=--effort=VALUE` overrides that effort for Claude Code. Independent review is available through the separate `audit` command.
+
+Claude Code may reuse a quick session from the same output folder when its backend, model, extra backend arguments and designer role match. The session must be less than one hour old from creation and its last measured context must be below 150,000 input tokens, including cached tokens. Claude Code keeps these sessions in its own configuration directory. PCE stores session state in `<out>/.quick-session.json`. A concurrent quick run starts a fresh session if it cannot acquire the session lock. A failed resume exits with code 2 and clears the saved state. Run the command again to start a fresh session. Standard generation and audits use fresh sessions, as do all Codex runs.
+
+Generation and audit manifests record `usage` with `input_tokens` (excluding cached input), `cache_read`, `cache_write`, `output_tokens` and `cost_usd`. Unreported values are `null`. Codex reports token counts and leaves `cost_usd` as `null`. For a resumed Claude Code session, PCE records the increase in cumulative dollars since the preceding call. The quick Claude manifest also records whether the session was reused, its age in seconds at reuse and the context measured after the call.
 
 **What the launcher does not do**: it never retries, loops or chains runs on its own. Each run is **one invocation** of your CLI; inside it, the agent may take several internal model turns (for example to read the knowledge base), all counted against your quota. A generated prompt is a candidate: nothing is validated or deployed automatically.
 
 **Read-only, and how it is enforced.** The request goes on standard input; the CLI runs from the repository folder.
-- Claude Code: `--tools Read,Grep,Glob` (the only built-in tools that exist in the session; `--allowedTools` merely pre-approves them), no MCP server (`--strict-mcp-config`, `--disallowedTools "mcp__*"`), `--permission-mode dontAsk` (any call that would need approval, such as a read outside the repository, is denied), no saved session. The role file replaces Claude Code's system prompt (`--system-prompt-file`).
+- Claude Code uses `--tools Read,Grep,Glob` to limit the built-in tools and `--allowedTools` to pre-approve them. `--strict-mcp-config` and `--disallowedTools "mcp__*"` disable MCP. `--permission-mode dontAsk` denies calls that require approval, such as reads outside the repository. The role file replaces Claude Code's system prompt through `--system-prompt-file`.
 - Codex: `codex exec --sandbox read-only`, approvals never escalated, your `config.toml` (including its MCP servers and profiles) and execpolicy rules ignored, nothing persisted. Codex has no system-prompt option: the role file is sent at the start of the message, clearly delimited. That is weaker than a real system prompt.
 - Your own CLI configuration still applies where these flags do not reach (for example Claude Code hooks you defined). `python pce.py check` verifies that your CLI versions know every flag used.
+
+## Optional launch plug
+
+PCE launches the selected CLI directly by default. To use a launcher you trust, put this configuration in `~/.config/pce/plugs.toml` and replace the example command with your own.
+
+```toml
+launch = ["my-cli-wrapper", "--quiet"]
+```
+
+The `launch` list is prepended to the CLI argument list and executed without a shell. The launcher receives the request on standard input and runs from the repository folder. It must forward the input to the CLI and return the CLI's standard output and exit code. Set `PCE_PLUGS` to choose another configuration file or set it to the empty string to disable the plug. An invalid configuration or a missing launcher executable stops the run before the CLI is invoked. The manifest records `launch_plug` as a boolean.
 
 ## Segmented profiles: mission prompts that keep their method
 For recurring missions, a **profile** (TOML) defines the prompt as ordered segments:
