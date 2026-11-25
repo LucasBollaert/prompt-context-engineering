@@ -615,18 +615,18 @@ class Quick(Base):
         role = pce.ROLE_FILES["designer"]
         c = pce.backend_command("claude", "claude", role, None, [], Path("x"), quick=True)
         self.assertEqual(c[c.index("--tools") + 1], "Read,Grep,Glob")
-        self.assertEqual(c[c.index("--effort") + 1], "medium")
+        self.assertNotIn("--effort", c)
         self.assertEqual(c[c.index("--allowedTools") + 1], "Read,Grep,Glob")
         self.assertEqual(c[c.index("--permission-mode") + 1], "dontAsk")
         self.assertEqual(c[-2:], ["--disallowedTools", "mcp__*"])
         c2 = pce.backend_command("claude", "claude", role, None, ["--effort", "high"], Path("x"), quick=True)
         self.assertEqual(c2.count("--effort"), 1)                           # the user's choice wins
         x = pce.backend_command("codex", "codex", role, None, [], Path("x"), quick=True)
-        self.assertIn('model_reasoning_effort="medium"', x)
+        self.assertFalse(any(arg.startswith("model_reasoning_effort=") for arg in x))
         self.assertEqual(x[x.index("--sandbox") + 1], "read-only")
         std = pce.backend_command("claude", "claude", role, None, [], Path("x"))
         self.assertEqual(std[std.index("--tools") + 1], "Read,Grep,Glob")
-        self.assertEqual(std[std.index("--effort") + 1], c[c.index("--effort") + 1])
+        self.assertNotIn("--effort", std)
 
     def test_quick_request_keeps_designer_and_is_recorded(self):
         code, _, _ = run(["generate", "--backend", "fake", "--quick", "--need", "x", "--out", str(self.out)], seg("prompt", "P"))

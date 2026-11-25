@@ -16,19 +16,18 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
-import errno
 import hashlib
 import json
 import os
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 from collections.abc import Callable
-from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -50,9 +49,15 @@ SEG_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 VAR = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
 MARKER = re.compile(r"<<<PCE:([^:<>\s]*):(BEGIN|END) ([^<>\s]*)>>>")
 READ_ONLY_TOOLS = "Read,Grep,Glob"
-DESIGN_EFFORT = "medium"
+SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 QUICK_SESSION_MAX_AGE = 3600
 QUICK_MAX_CONTEXT = 150_000
+SESSION_RETENTION = 2 * QUICK_SESSION_MAX_AGE
+RESUME_NOTICE = (
+    "Independent request. This request has no link with any request handled earlier in this session: "
+    "do not reuse, continue or refer to their needs, missions, objects, answers or wording. "
+    "Knowledge-base files read earlier remain valid reference material; reread any file whose exact text you need."
+)
 KB_RULE = {
     False: "You may read the knowledge base in `referentiel/` (start with `referentiel/00_INDEX.md` and "
            "`referentiel/research/knowledge_registry.yaml`) when the situation calls for it. Do not load everything.",
@@ -288,15 +293,20 @@ def launch_prefix() -> tuple[str, ...]:
     config = os.environ.get("PCE_PLUGS")
     if config == "":
         return ()
-    path = Path(config).expanduser() if config is not None else Path.home() / ".config" / "pce" / "plugs.toml"
+    try:
+        path = Path(config).expanduser() if config is not None else Path.home() / ".config" / "pce" / "plugs.toml"
+    except (OSError, RuntimeError) as e:
+        raise PceError(f"could not locate launch configuration: {e}") from None
     try:
         with path.open("rb") as stream:
             data = tomllib.load(stream)
     except FileNotFoundError:
         if path.is_symlink():
             raise PceError(f"{path}: launch configuration link has no target") from None
+        if config is not None:
+            raise PceError(f"{path}: launch configuration file not found") from None
         return ()
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as e:
+    except (OSError, ValueError) as e:
         raise PceError(f"{path}: could not read launch configuration: {e}") from None
     launch = data.get("launch")
     if (set(data) != {"launch"} or not isinstance(launch, list) or not launch or not launch[0]
@@ -308,12 +318,15 @@ def launch_prefix() -> tuple[str, ...]:
     return (os.path.abspath(exe), *launch[1:])
 
 
+def valid_session_id(value: object) -> bool:
+    return isinstance(value, str) and SESSION_ID.fullmatch(value) is not None
+
+
 def backend_command(backend: str, exe: str, system_file: Path, model: str | None,
                     extra: list[str], last: Path, quick: bool = False, *, audit: bool = False,
                     resume: str | None = None, launch: tuple[str, ...] = ()) -> list[str]:
     """The exact command line. The request itself is always sent on standard input."""
     extra = check_backend_args(backend, extra)
-    user_effort = any(x.split("=", 1)[0] == "--effort" for x in extra)
     if backend == "claude":
         # --tools sets which built-in tools exist (read-only ones only); --allowedTools merely
         # pre-approves them. MCP tools are not covered by --tools: load none and deny any.
@@ -323,22 +336,19 @@ def backend_command(backend: str, exe: str, system_file: Path, model: str | None
                "--tools", READ_ONLY_TOOLS,
                "--strict-mcp-config", "--permission-mode", "dontAsk",
                "--output-format", "json", "--allowedTools", READ_ONLY_TOOLS]
-        if quick and not audit:
-            if resume is not None:
-                cmd += ["--resume", resume]
-        else:
+        if audit:
             cmd += ["--no-session-persistence"]
+        elif quick and resume is not None:
+            if not valid_session_id(resume):
+                raise PceError("invalid Claude session id")
+            cmd += ["--resume", resume]
         if model:
             cmd += ["--model", model]
-        if not audit and not user_effort:
-            cmd += ["--effort", DESIGN_EFFORT]
         return [*launch, *cmd, *extra, "--disallowedTools", "mcp__*"]
     # Codex: read-only sandbox, no approval escalation, user config (MCP servers, profiles) and
     # execpolicy rules ignored, nothing persisted. The prompt "-" is read from standard input.
     cmd = [exe, "exec", "--sandbox", "read-only", "--config", 'approval_policy="never"',
            "--ignore-user-config", "--ignore-rules", "--ephemeral", "--json", "--output-last-message", str(last)]
-    if not audit:
-        cmd += ["--config", f'model_reasoning_effort="{DESIGN_EFFORT}"']
     if model:
         cmd += ["--model", model]
     return [*launch, *cmd, *extra, "-"]
@@ -368,10 +378,16 @@ class BackendResult:
     session_id: str | None = None
     context_tokens: int | None = None
     launch_plug: bool = False
+    error: str | None = None
+    account: str | None = None
 
 
 def token_count(value: object) -> int | None:
     return value if type(value) is int and value >= 0 else None
+
+
+def finite_number(value: object) -> bool:
+    return type(value) in (int, float) and -sys.float_info.max <= value <= sys.float_info.max
 
 
 def usage_fields(data: object, cache_read: str, cache_write: str) -> dict[str, int | float | None]:
@@ -385,15 +401,17 @@ def usage_fields(data: object, cache_read: str, cache_write: str) -> dict[str, i
 
 def claude_response(stdout: bytes) -> BackendResult:
     data = json.loads(stdout)
-    if (not isinstance(data, dict) or data.get("is_error") is not False or data.get("subtype") != "success"
-            or not isinstance(data.get("result"), str)):
-        detail = data.get("result") if isinstance(data, dict) else None
-        raise PceError("claude returned an unsuccessful or invalid result"
-                       + (f":\n{detail[-2000:]}" if isinstance(detail, str) and detail else ""))
+    if not isinstance(data, dict):
+        data = {}
+    detail = data.get("result")
+    response = detail if isinstance(detail, str) else ""
+    error = None
+    if data.get("is_error") is not False or data.get("subtype") != "success" or not isinstance(detail, str):
+        error = "claude returned an unsuccessful or invalid result" + (f":\n{response[-2000:]}" if response else "")
     counters = data.get("usage")
     usage = usage_fields(counters, "cache_read_input_tokens", "cache_creation_input_tokens")
     cost = data.get("total_cost_usd")
-    if type(cost) in (int, float) and 0 <= cost < float("inf"):
+    if finite_number(cost) and cost >= 0:
         usage["cost_usd"] = cost
     session_id = data.get("session_id")
     iterations = counters.get("iterations") if isinstance(counters, dict) else None
@@ -403,28 +421,54 @@ def claude_response(stdout: bytes) -> BackendResult:
         counts = (last["input_tokens"], last["cache_read"], last["cache_write"])
         if None not in counts:
             context = sum(counts)
-    return BackendResult(data["result"], usage, session_id if isinstance(session_id, str) else None, context)
+    return BackendResult(response, usage, session_id if valid_session_id(session_id) else None, context, error=error)
 
 
 def codex_response(stdout: bytes, last: Path) -> BackendResult:
-    response = read_text(last)
     usage = None
+    error = None
     for line in stdout.splitlines():
-        if line.strip():
+        if not line.strip():
+            continue
+        try:
             event = json.loads(line)
-            if not isinstance(event, dict) or not isinstance(event.get("type"), str):
-                raise PceError("codex returned an invalid JSON event")
-            if event["type"] == "turn.completed":
-                usage = event.get("usage")
+        except (ValueError, RecursionError) as e:
+            error = f"codex output could not be read: {e}"
+            continue
+        if not isinstance(event, dict) or not isinstance(event.get("type"), str):
+            error = "codex returned an invalid JSON event"
+        elif event["type"] == "turn.completed":
+            usage = event.get("usage")
     counts = usage_fields(usage, "cached_input_tokens", "cache_write_input_tokens")
     total, cached = counts["input_tokens"], counts["cache_read"]
     counts["input_tokens"] = total - cached if total is not None and cached is not None and cached <= total else None
-    return BackendResult(response, counts)
+    response = ""
+    if error is None:
+        try:
+            response = read_text(last)
+        except PceError as e:
+            error = str(e)
+        except OSError as e:
+            error = f"codex output could not be read: {e}"
+    return BackendResult(response, counts, error=error)
+
+
+def read_reported_account(path: Path) -> str | None:
+    try:
+        with path.open("rb") as stream:
+            for line in stream:
+                account = line.decode("utf-8").rstrip("\r\n")
+                if account.strip():
+                    return account if len(account) <= 4096 else None
+    except (OSError, UnicodeDecodeError):
+        pass
+    return None
 
 
 def run_backend(backend: str, system_file: Path, system: str, request: str, workdir: Path,
                 model: str | None, extra: list[str], quick: bool = False, *, audit: bool = False,
-                resume: str | None = None, launch: tuple[str, ...] | None = None) -> BackendResult:
+                resume: str | None = None, launch: tuple[str, ...] | None = None,
+                candidates: list[dict[str, str | None]] | None = None) -> BackendResult:
     """system_file is the run's snapshot of the role instructions; system is its text."""
     if backend == "fake":
         fake = os.environ.get("PCE_FAKE_RESPONSE_FILE")
@@ -436,33 +480,41 @@ def run_backend(backend: str, system_file: Path, system: str, request: str, work
     exe = shutil.which(backend)
     if not exe:
         raise PceError(f"'{backend}' is not installed or not on PATH (see: python pce.py check)")
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(dir=workdir.resolve()) as tmp:
         last = Path(tmp) / "last.md"
         cmd = backend_command(backend, exe, system_file, model, extra, last, quick, audit=audit,
                               resume=resume, launch=launch)
+        if resume is not None:
+            request = f"{RESUME_NOTICE}\n\n{request}"
+            write_text(workdir / "request.md", request)
         stdin = request if backend == "claude" else (
             f"<operating_instructions source=\"{system_file.name.removeprefix('role_')}\">\n{system}\n</operating_instructions>\n\n"
             f"Follow the operating instructions above for this request.\n\n{request}")
+        account_file = None
+        launch_options = {}
+        if launch and candidates is not None:
+            account_file = Path(tmp) / "account"
+            launch_options["env"] = dict(os.environ, PCE_RESUME_CANDIDATES=json.dumps(candidates),
+                                         PCE_ACCOUNT_FILE=str(account_file))
         # Bytes in and out: no line-ending translation of the request or the answer (Windows).
         try:
-            proc = subprocess.run(cmd, input=stdin.encode("utf-8"), capture_output=True, cwd=ROOT)
+            proc = subprocess.run(cmd, input=stdin.encode("utf-8"), capture_output=True, cwd=ROOT, **launch_options)
         except OSError as e:
             raise PceError(f"could not launch {backend}: {e}") from None
         try:
-            if proc.returncode != 0:
-                # Claude Code prints some errors (e.g. authentication) on stdout, not stderr.
-                err = proc.stderr.strip() or proc.stdout.strip()
-                raise PceError(f"{backend} failed (code {proc.returncode}):\n"
-                               f"{err.decode('utf-8', errors='replace')[-2000:]}")
             result = claude_response(proc.stdout) if backend == "claude" else codex_response(proc.stdout, last)
-            result.launch_plug = bool(launch)
-            return result
-        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+        except (ValueError, RecursionError) as e:
+            result = BackendResult("", usage_fields(None, "", ""), error=f"{backend} output could not be read: {e}")
+        if proc.returncode != 0:
+            # The CLI may put its error on stdout instead of stderr.
+            err = proc.stderr.strip() or proc.stdout.strip()
+            result.error = f"{backend} failed (code {proc.returncode}):\n{err.decode('utf-8', errors='replace')[-2000:]}"
+        if result.error is not None:
             (workdir / "response_raw.md").write_bytes(proc.stdout)
-            raise PceError(f"{backend} output could not be read: {e}") from None
-        except PceError:
-            (workdir / "response_raw.md").write_bytes(proc.stdout)
-            raise
+        result.launch_plug = bool(launch)
+        if account_file is not None:
+            result.account = read_reported_account(account_file)
+        return result
 
 
 _FAKE_NONCE = None
@@ -585,138 +637,221 @@ def write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def quick_state(path: Path, key: dict, now: float) -> dict | None:
+def read_session(path: Path) -> dict | None:
     try:
+        if not stat.S_ISREG(path.lstat().st_mode):
+            return None
         state = json.loads(path.read_bytes())
-    except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError):
+    except (OSError, ValueError, RecursionError):
         return None
-    if not isinstance(state, dict) or any(state.get(k) != v for k, v in key.items()):
+    fields = {"backend", "model", "backend_args", "role_sha256", "account", "session_id", "origin",
+              "created", "last_used", "context_tokens", "total_cost_usd"}
+    if not isinstance(state, dict) or not fields <= state.keys():
         return None
-    created, session_id = state.get("created"), state.get("session_id")
-    context = token_count(state.get("context_tokens"))
-    if (type(created) in (float, int) and 0 <= now - created < QUICK_SESSION_MAX_AGE
-            and context is not None and context < QUICK_MAX_CONTEXT
-            and isinstance(session_id, str) and session_id):
-        return state
-    return None
+    if (not valid_session_id(state["session_id"]) or state["session_id"] != path.stem
+            or state["origin"] not in ("standard", "quick")
+            or (state["account"] is not None and not (isinstance(state["account"], str) and state["account"]))
+            or not all(finite_number(state[k]) for k in ("created", "last_used"))):
+        return None
+    context, cost = state["context_tokens"], state["total_cost_usd"]
+    if context is not None and token_count(context) is None:
+        return None
+    if cost is not None and not (finite_number(cost) and cost >= 0):
+        return None
+    return state
 
 
-def replace_quick_state(path: Path, state: dict) -> None:
-    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".quick-session-", delete=False) as tmp:
+def replace_session(path: Path, state: dict) -> None:
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".session-", delete=False) as tmp:
         temp_path = Path(tmp.name)
     try:
-        write_json(temp_path, state)
+        temp_path.write_bytes((json.dumps(state, indent=2) + "\n").encode("ascii"))
         os.replace(temp_path, path)
     finally:
         temp_path.unlink(missing_ok=True)
 
 
-@contextmanager
-def quick_guard(base: Path, *, blocking: bool):
-    """Serialize a lock replacement with the owner's final state update."""
-    fd = os.open(base / ".quick-session.guard", os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        if os.name == "nt":
-            import msvcrt
-            try:
-                msvcrt.locking(fd, msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK, 1)
-            except OSError as e:
-                if blocking or e.errno not in (errno.EACCES, errno.EAGAIN):
-                    raise
-                yield False
-                return
-        else:
-            import fcntl
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                yield False
-                return
-        yield True
-    finally:
-        os.close(fd)
+def session_order(state: dict) -> tuple[int, float, str]:
+    return state["context_tokens"], -state["last_used"], state["session_id"]
 
 
-def claim_quick_lock(lock: Path, now: float) -> bytes | None:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    with quick_guard(lock.parent, blocking=False) as acquired:
-        if not acquired:
-            return None
+class SessionPool:
+    def __init__(self, workdir: Path):
+        self.path = workdir / ".pce-sessions"
+        self.owners: dict[str, bytes] = {}
+
+    def check_path(self) -> None:
         try:
-            fd = os.open(lock, flags, 0o600)
-        except FileExistsError:
-            if now - lock.stat().st_mtime <= QUICK_SESSION_MAX_AGE:
-                return None
-            lock.unlink()
-            fd = os.open(lock, flags, 0o600)
-        owner = secrets.token_hex(16).encode("ascii")
-        try:
-            with os.fdopen(fd, "wb") as stream:
-                stream.write(owner)
-            os.utime(lock, (now, now))
-        except BaseException:
-            lock.unlink(missing_ok=True)
-            raise
-        return owner
-
-
-def finish_quick_lock(lock: Path, owner: bytes, path: Path, replacement: dict | None) -> None:
-    with quick_guard(lock.parent, blocking=True):
-        try:
-            current_owner = lock.read_bytes()
+            mode = self.path.lstat().st_mode
         except FileNotFoundError:
             return
-        if current_owner != owner:
-            return
+        if not stat.S_ISDIR(mode):
+            raise NotADirectoryError(f"{self.path} is not a directory")
+
+    def entry(self, session_id: str) -> Path:
+        return self.path / f"{session_id}.json"
+
+    def lock(self, session_id: str) -> Path:
+        return self.path / f"{session_id}.lock"
+
+    def claim(self, session_id: str) -> bool:
+        owner = secrets.token_hex(16).encode("ascii")
         try:
-            if replacement is None:
+            fd = os.open(self.lock(session_id), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return False
+        self.owners[session_id] = owner
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(owner)
+        return True
+
+    def owns(self, session_id: str) -> bool:
+        try:
+            return self.lock(session_id).read_bytes() == self.owners[session_id]
+        except FileNotFoundError:
+            return False
+
+    def release(self, session_id: str) -> None:
+        if self.owns(session_id):
+            self.lock(session_id).unlink(missing_ok=True)
+        del self.owners[session_id]
+
+    def discard(self, session_id: str) -> None:
+        if self.owns(session_id):
+            self.entry(session_id).unlink(missing_ok=True)
+
+    def save(self, state: dict) -> bool:
+        self.path.mkdir(exist_ok=True)
+        session_id = state["session_id"]
+        if session_id not in self.owners and not self.claim(session_id):
+            return False
+        if not self.owns(session_id):
+            return False
+        replace_session(self.entry(session_id), state)
+        return True
+
+    def reserve(self, key: dict, account: str | None, via_plug: bool, clock: Callable[[], float]) -> list[dict]:
+        def eligible(state: dict, now: float) -> bool:
+            return (0 <= now - state["created"] < QUICK_SESSION_MAX_AGE
+                    and state["context_tokens"] is not None and state["context_tokens"] < QUICK_MAX_CONTEXT
+                    and (via_plug or state["account"] == account)
+                    and all(state[k] == v for k, v in key.items()))
+
+        now = clock()
+        try:
+            paths = list(self.path.iterdir())
+        except FileNotFoundError:
+            return []
+        ranked = []
+        for path in paths:
+            if path.suffix != ".json" or not valid_session_id(path.stem):
+                continue
+            state = read_session(path)
+            if state is None:
+                continue
+            if now - state["created"] > SESSION_RETENTION:
                 path.unlink(missing_ok=True)
-            else:
-                replace_quick_state(path, replacement)
-        finally:
-            lock.unlink(missing_ok=True)
+                self.lock(state["session_id"]).unlink(missing_ok=True)
+            elif eligible(state, now):
+                ranked.append(state)
+
+        reserved = []
+        accounts = set()
+        for state in sorted(ranked, key=session_order):
+            session_id = state["session_id"]
+            if state["account"] in accounts or not self.claim(session_id):
+                continue
+            current = read_session(self.entry(session_id))
+            if current is None or not eligible(current, clock()) or current["account"] in accounts:
+                self.release(session_id)
+                continue
+            reserved.append(current)
+            accounts.add(current["account"])
+            if not via_plug:
+                break
+
+        if len(reserved) > 1:
+            # Prefer the account most recently used, with its lightest available session first.
+            preferred = max((state for state in ranked + reserved if state["account"] in accounts),
+                            key=lambda state: state["last_used"])["account"]
+            reserved.sort(key=lambda state: (state["account"] != preferred, *session_order(state)))
+        return reserved
+
+
+def claude_account() -> str:
+    config = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude")
+    return os.path.realpath(os.path.join(ROOT, config))  # The CLI runs from ROOT, including for relative config paths.
+
+
+def session_warning(error: OSError) -> None:
+    print(f"pce: warning: could not update Claude session pool: {error}", file=sys.stderr)
 
 
 def run_generate_backend(a: argparse.Namespace, role_snap: Path, role_text: str, role_hash: str,
                          request: str, run: Path, quick: bool, *,
-                         clock: Callable[[], float]) -> tuple[BackendResult, dict | None]:
+                         started: float, clock: Callable[[], float]) -> tuple[BackendResult, dict | None]:
     extra = a.backend_arg or []
-    if a.backend != "claude" or not quick:
+    if a.backend != "claude":
         return run_backend(a.backend, role_snap, role_text, request, run, a.model, extra, quick), None
 
     launch = launch_prefix()
-    path = run.parent / ".quick-session.json"
-    lock = run.parent / ".quick-session.lock"
+    pool = SessionPool(run.parent)
     key = {"backend": a.backend, "model": a.model, "backend_args": extra, "role_sha256": role_hash}
-    now = clock()
-    owner = claim_quick_lock(lock, now)
-    replacement = None
+    session = {"saved": False}
     try:
-        state = quick_state(path, key, now) if owner is not None else None
-        resume = state["session_id"] if state else None
         try:
-            result = run_backend(a.backend, role_snap, role_text, request, run, a.model, extra, quick,
-                                 resume=resume, launch=launch)
-        except PceError as e:
-            if resume is not None:
-                raise PceError(f"{e}\nPlease run again to start a fresh session.") from None
-            raise
+            account = None if launch else claude_account()
+            pool.check_path()
+            reserved = pool.reserve(key, account, bool(launch), clock) if quick else []
+        except OSError as e:
+            raise PceError(f"could not access Claude session pool: {e}") from None
+        resume = reserved[0]["session_id"] if reserved else None
+        candidates = [{"session_id": state["session_id"], "account": state["account"]} for state in reserved]
+        selected_at = clock()
+        result = run_backend(a.backend, role_snap, role_text, request, run, a.model, extra, quick,
+                             resume=resume, launch=launch, candidates=candidates if launch else None)
+        state = next((entry for entry in reserved if entry["session_id"] == result.session_id), None)
+        session.update(reused=state is not None, resumed_origin=state["origin"] if state else None,
+                       age_s=selected_at - state["created"] if state else None,
+                       context_tokens=result.context_tokens, isolation_notice=resume is not None,
+                       candidates=len(candidates))
         total = result.usage["cost_usd"]
-        if result.session_id:
-            replacement = key | {"created": state["created"] if state else now,
-                                 "session_id": result.session_id, "context_tokens": result.context_tokens,
-                                 "total_cost_usd": total}
         if state:
-            previous = state.get("total_cost_usd")
             # Claude reports per-call tokens and cumulative dollars for a resumed session.
+            previous = state["total_cost_usd"]
             result.usage["cost_usd"] = (float(Decimal(str(total)) - Decimal(str(previous)))
-                                        if total is not None and type(previous) in (int, float) else None)
-        session = {"reused": state is not None, "age_s": now - state["created"] if state else None,
-                   "context_tokens": result.context_tokens}
+                                        if total is not None and previous is not None and total >= previous else None)
+        if result.error is not None:
+            for entry in reserved:
+                try:
+                    pool.discard(entry["session_id"])
+                except OSError as e:
+                    session_warning(e)
+            if reserved:
+                result.error += "\nRun again: a fresh session will be used."
+        elif result.session_id is not None:
+            new_state = key | {"session_id": result.session_id, "account": result.account if launch else account,
+                               "origin": state["origin"] if state else ("quick" if quick else "standard"),
+                               "created": state["created"] if state else started, "last_used": clock(),
+                               "context_tokens": result.context_tokens, "total_cost_usd": total}
+            try:
+                session["saved"] = pool.save(new_state)
+            except OSError as e:
+                session_warning(e)
+                if state:
+                    # A stale context and cost baseline are unsafe after the session has advanced.
+                    try:
+                        pool.discard(result.session_id)
+                    except OSError as discard_error:
+                        session_warning(discard_error)
         return result, session
     finally:
-        if owner is not None:
-            finish_quick_lock(lock, owner, path, replacement)
+        for session_id in tuple(pool.owners):
+            try:
+                pool.release(session_id)
+            except OSError as e:
+                session["saved"] = False
+                session_warning(e)
 
 
 # --------------------------------------------------------------------------- commands
@@ -738,6 +873,7 @@ def text_arg(value: str | None, file: str | None) -> str:
 
 def cmd_generate(a: argparse.Namespace) -> int:
     global _FAKE_NONCE
+    started = time.time()
     profile = load_profile(Path(a.profile)) if a.profile else builtin_profile()
     values = dict(profile.get("variables", {}))
     values.update(parse_vars(a.var))
@@ -762,9 +898,8 @@ def cmd_generate(a: argparse.Namespace) -> int:
     print(f"Invoking {a.backend} once, read-only (designer role)…", file=sys.stderr)
     role_text, role_snap = snapshot_role(ROLE_FILES["designer"], run)
     role_hash = sha256(role_text)
-    result, session = run_generate_backend(a, role_snap, role_text, role_hash, request, run, quick, clock=time.time)
-    response = result.response
-    write_text(run / "response_raw.md", response)
+    result, session = run_generate_backend(a, role_snap, role_text, role_hash, request, run, quick,
+                                           started=started, clock=time.time)
     manifest = {
         "pce_version": VERSION, "repo_commit": git_commit(), "date": _dt.datetime.now().isoformat(timespec="seconds"),
         "backend": a.backend, "model": a.model, "cli_invocations": 1, "usage": result.usage,
@@ -780,6 +915,12 @@ def cmd_generate(a: argparse.Namespace) -> int:
                                for s in profile["segments"] if s["kind"] == "reference"},
         "body_only": a.body_only, "mode": "quick" if quick else "standard", "status": "invalid response",
     }
+    if result.error is not None:
+        manifest["status"] = "backend error"
+        write_json(run / "manifest.json", manifest)
+        raise PceError(result.error)
+    response = result.response
+    write_text(run / "response_raw.md", response)
     try:
         generated, notes = extract_segments(response, profile, nonce)
         blocked = {k: v for k, v in generated.items() if v.lstrip().startswith("BLOCKED:")}
@@ -814,14 +955,19 @@ def cmd_audit(a: argparse.Namespace) -> int:
     print(f"Invoking {a.backend} once, read-only ({a.role} auditor, fresh session)…", file=sys.stderr)
     role_text, role_snap = snapshot_role(ROLE_FILES[a.role], run)
     result = run_backend(a.backend, role_snap, role_text, request, run, a.model, a.backend_arg or [], audit=True)
-    write_text(run / "report.md", result.response)
-    write_json(run / "manifest.json", {
+    manifest = {
         "pce_version": VERSION, "repo_commit": git_commit(), "date": _dt.datetime.now().isoformat(timespec="seconds"),
         "backend": a.backend, "model": a.model, "cli_invocations": 1, "usage": result.usage,
         "launch_plug": result.launch_plug,
         "instructions_channel": instructions_channel(a.backend), "role_file": ROLE_FILES[a.role].name,
         "role_sha256": sha256(role_text), "audited_prompt_sha256": sha256(prompt), "context_provided": bool(context.strip()),
-    })
+    }
+    if result.error is not None:
+        manifest["status"] = "backend error"
+        write_json(run / "manifest.json", manifest)
+        raise PceError(result.error)
+    write_text(run / "report.md", result.response)
+    write_json(run / "manifest.json", manifest)
     print(f"Report: {run / 'report.md'}")
     return 0
 
@@ -914,7 +1060,7 @@ def wizard() -> int:
     ns.target = ask("Target model and environment (e.g. Claude Code on a Python repo)", "")
     ns.need = ask_block("Describe what you need the prompt for")
     ns.need_file, ns.mission_file, ns.var, ns.prompt_language, ns.body_only = None, None, [], None, False
-    ns.quick = ask("Quick mode (same design process, skip follow-up review)? (y/N)", "n").lower().startswith("y")
+    ns.quick = ask("Quick mode (same design process and CLI effort, skip follow-up review)? (y/N)", "n").lower().startswith("y")
     if ns.profile:
         prof = load_profile(Path(ns.profile))
         if any(s["kind"] == "mission" for s in prof["segments"]):
@@ -963,7 +1109,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--prompt-language", help="language policy for the produced prompt")
     g.add_argument("--body-only", action="store_true", help="output only the generated segments (when another tool assembles)")
     g.add_argument("--quick", action="store_true",
-                   help="same design process and effort, for prompts used without a follow-up audit")
+                   help="same design process and CLI effort, for prompts used without a follow-up audit")
     g.set_defaults(fn=cmd_generate)
 
     au = sub.add_parser("audit", help="audit a prompt in a fresh session")
